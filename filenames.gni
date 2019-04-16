@@ -78,6 +78,7 @@ filenames = {
     "lib/renderer/web-view/web-view-init.js",
     "lib/renderer/api/exports/electron.js",
     "lib/renderer/api/crash-reporter.js",
+    "lib/renderer/api/custom-media-stream.js",
     "lib/renderer/api/ipc-renderer.js",
     "lib/renderer/api/module-list.js",
     "lib/renderer/api/remote.js",
