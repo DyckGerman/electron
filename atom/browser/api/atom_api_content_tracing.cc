@@ -11,6 +11,7 @@
 #include "atom/common/promise_util.h"
 #include "base/bind.h"
 #include "base/files/file_util.h"
+#include "base/threading/thread_restrictions.h"
 #include "content/public/browser/tracing_controller.h"
 #include "native_mate/dictionary.h"
 
@@ -59,6 +60,11 @@ scoped_refptr<TracingController::TraceDataEndpoint> GetTraceDataEndpoint(
     const base::FilePath& path,
     const CompletionCallback& callback) {
   base::FilePath result_file_path = path;
+
+  // base::CreateTemporaryFile prevents blocking so we need to allow it
+  // for now since offloading this to a different sequence would require
+  // changing the api shape
+  base::ThreadRestrictions::ScopedAllowIO allow_io;
   if (result_file_path.empty() && !base::CreateTemporaryFile(&result_file_path))
     LOG(ERROR) << "Creating temporary file failed";
 
@@ -134,4 +140,4 @@ void Initialize(v8::Local<v8::Object> exports,
 
 }  // namespace
 
-NODE_BUILTIN_MODULE_CONTEXT_AWARE(atom_browser_content_tracing, Initialize)
+NODE_LINKED_MODULE_CONTEXT_AWARE(atom_browser_content_tracing, Initialize)

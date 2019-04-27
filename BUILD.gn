@@ -9,6 +9,7 @@ import("//tools/grit/repack.gni")
 import("//tools/v8_context_snapshot/v8_context_snapshot.gni")
 import("//v8/snapshot_toolchain.gni")
 import("build/asar.gni")
+import("build/js_wrap.gni")
 import("build/npm.gni")
 import("buildflags/buildflags.gni")
 import("electron_paks.gni")
@@ -52,7 +53,7 @@ config("branding") {
   ]
 }
 
-npm_action("atom_browserify_sandbox") {
+npm_action("atom_browserify_sandbox_unwrapped") {
   script = "browserify"
 
   inputs = [
@@ -64,7 +65,7 @@ npm_action("atom_browserify_sandbox") {
   ]
 
   outputs = [
-    "$target_gen_dir/js2c/preload_bundle.js",
+    "$target_gen_dir/js2c/preload_bundle_unwrapped.js",
   ]
 
   args = [
@@ -73,12 +74,14 @@ npm_action("atom_browserify_sandbox") {
     "./lib/sandboxed_renderer/api/exports/electron.js:electron",
     "-t",
     "aliasify",
+    "--standalone",
+    "sandboxed_preload",
     "-o",
     rebase_path(outputs[0]),
   ]
 }
 
-npm_action("atom_browserify_isolated") {
+npm_action("atom_browserify_isolated_unwrapped") {
   script = "browserify"
 
   inputs = [
@@ -86,15 +89,45 @@ npm_action("atom_browserify_isolated") {
   ]
 
   outputs = [
-    "$target_gen_dir/js2c/isolated_bundle.js",
+    "$target_gen_dir/js2c/isolated_bundle_unwrapped.js",
   ]
 
   args = [
     "lib/isolated_renderer/init.js",
     "-t",
     "aliasify",
+    "--standalone",
+    "isolated_preload",
     "-o",
     rebase_path(outputs[0]),
+  ]
+}
+
+js_wrap("atom_browserify_isolated") {
+  deps = [
+    ":atom_browserify_isolated_unwrapped",
+  ]
+
+  inputs = [
+    "$target_gen_dir/js2c/isolated_bundle_unwrapped.js",
+  ]
+
+  outputs = [
+    "$target_gen_dir/js2c/isolated_bundle.js",
+  ]
+}
+
+js_wrap("atom_browserify_sandbox") {
+  deps = [
+    ":atom_browserify_sandbox_unwrapped",
+  ]
+
+  inputs = [
+    "$target_gen_dir/js2c/preload_bundle_unwrapped.js",
+  ]
+
+  outputs = [
+    "$target_gen_dir/js2c/preload_bundle.js",
   ]
 }
 
@@ -324,8 +357,6 @@ static_library("electron_lib") {
       "*_views.cc",
       "*_views.h",
       "*\bviews/*",
-      "*/autofill_popup.cc",
-      "*/autofill_popup.h",
     ]
   }
 
@@ -349,6 +380,10 @@ static_library("electron_lib") {
     deps += [
       "//third_party/crashpad/crashpad/client",
       "//ui/accelerated_widget_mac",
+    ]
+    sources += [
+      "atom/browser/ui/views/autofill_popup_view.cc",
+      "atom/browser/ui/views/autofill_popup_view.h",
     ]
     include_dirs += [
       # NOTE(nornagon): other chromium files use the full path to include

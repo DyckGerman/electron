@@ -1315,6 +1315,48 @@ describe('BrowserWindow module', () => {
     afterEach(() => { ipcMain.removeAllListeners('answer') })
 
     describe('"preload" option', () => {
+      const doesNotLeakSpec = (name, webPrefs) => {
+        it(name, async function () {
+          w.destroy()
+          w = new BrowserWindow({
+            webPreferences: {
+              ...webPrefs,
+              preload: path.resolve(fixtures, 'module', 'empty.js')
+            },
+            show: false
+          })
+          const leakResult = emittedOnce(ipcMain, 'leak-result')
+          w.loadFile(path.join(fixtures, 'api', 'no-leak.html'))
+          const [, result] = await leakResult
+          console.log(result)
+          expect(result).to.have.property('require', 'undefined')
+          expect(result).to.have.property('exports', 'undefined')
+          expect(result).to.have.property('windowExports', 'undefined')
+          expect(result).to.have.property('windowPreload', 'undefined')
+          expect(result).to.have.property('windowRequire', 'undefined')
+        })
+      }
+      doesNotLeakSpec('does not leak require', {
+        nodeIntegration: false,
+        sandbox: false,
+        contextIsolation: false
+      })
+      doesNotLeakSpec('does not leak require when sandbox is enabled', {
+        nodeIntegration: false,
+        sandbox: true,
+        contextIsolation: false
+      })
+      doesNotLeakSpec('does not leak require when context isolation is enabled', {
+        nodeIntegration: false,
+        sandbox: false,
+        contextIsolation: true
+      })
+      doesNotLeakSpec('does not leak require when context isolation and sandbox are enabled', {
+        nodeIntegration: false,
+        sandbox: true,
+        contextIsolation: true
+      })
+
       it('loads the script before other scripts in window', async () => {
         const preload = path.join(fixtures, 'module', 'set-global.js')
         w.destroy()
@@ -1526,7 +1568,6 @@ describe('BrowserWindow module', () => {
         w = new BrowserWindow({
           show: false,
           webPreferences: {
-            nodeIntegration: true,
             sandbox: true,
             preload
           }
@@ -1544,7 +1585,6 @@ describe('BrowserWindow module', () => {
         w = new BrowserWindow({
           show: false,
           webPreferences: {
-            nodeIntegration: true,
             sandbox: true,
             preload: preloadSpecialChars
           }
@@ -1552,12 +1592,24 @@ describe('BrowserWindow module', () => {
         w.loadFile(path.join(fixtures, 'api', 'preload.html'))
       })
 
+      it('exposes "loaded" event to preload script', function (done) {
+        w.destroy()
+        w = new BrowserWindow({
+          show: false,
+          webPreferences: {
+            sandbox: true,
+            preload
+          }
+        })
+        ipcMain.once('process-loaded', () => done())
+        w.loadURL('about:blank')
+      })
+
       it('exposes "exit" event to preload script', function (done) {
         w.destroy()
         w = new BrowserWindow({
           show: false,
           webPreferences: {
-            nodeIntegration: true,
             sandbox: true,
             preload
           }
@@ -1580,7 +1632,6 @@ describe('BrowserWindow module', () => {
         w = new BrowserWindow({
           show: false,
           webPreferences: {
-            nodeIntegration: true,
             sandbox: true,
             preload
           }
@@ -1784,29 +1835,6 @@ describe('BrowserWindow module', () => {
           }, 100)
         })
         w.loadFile(path.join(fixtures, 'pages', 'window-open.html'))
-      })
-
-      // TODO(alexeykuzmin): `GetProcessMemoryInfo()` is not available starting Ch67.
-      xit('releases memory after popup is closed', (done) => {
-        w.destroy()
-        w = new BrowserWindow({
-          show: false,
-          webPreferences: {
-            preload,
-            sandbox: true
-          }
-        })
-        w.loadFile(path.join(fixtures, 'api', 'sandbox.html'), { search: 'allocate-memory' })
-        ipcMain.once('answer', function (event, { bytesBeforeOpen, bytesAfterOpen, bytesAfterClose }) {
-          const memoryIncreaseByOpen = bytesAfterOpen - bytesBeforeOpen
-          const memoryDecreaseByClose = bytesAfterOpen - bytesAfterClose
-          // decreased memory should be less than increased due to factors we
-          // can't control, but given the amount of memory allocated in the
-          // fixture, we can reasonably expect decrease to be at least 70% of
-          // increase
-          assert(memoryDecreaseByClose > memoryIncreaseByOpen * 0.7)
-          done()
-        })
       })
 
       // see #9387
