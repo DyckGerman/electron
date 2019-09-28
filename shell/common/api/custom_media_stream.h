@@ -37,9 +37,10 @@ class VideoFrame {
 };
 
 // Controller object interface for non-GC frames
+// Manages the life cycle of frames
 // (When accessing the API from C++)
-// TODO: Rename to VideoFrameControl ???
-struct VideoFrameCallback {
+class VideoFramesController {
+ public:
   using Format = VideoFrame::Format;
 
   // Allocates a frame of the specific format
@@ -55,15 +56,15 @@ struct VideoFrameCallback {
   virtual void releaseFrame(VideoFrame* frame) = 0;
 };
 
-// Retrieves VideoFrameCallback pointer from an internal field of an object
+// Retrieves VideoFramesController pointer from an internal field of an object
 // TODO: Why inline? move implementation to .cc
-inline VideoFrameCallback* unwrapCallback(v8::Local<v8::Value> value) {
+inline VideoFramesController* unwrapCallback(v8::Local<v8::Value> value) {
   if (!value->IsObject())
     return nullptr;
   v8::Local<v8::Object> obj = v8::Local<v8::Object>::Cast(value);
   if (obj->InternalFieldCount() != 2)
     return nullptr;
-  return static_cast<VideoFrameCallback*>(
+  return static_cast<VideoFramesController*>(
       obj->GetAlignedPointerFromInternalField(1));
 }
 
@@ -98,10 +99,10 @@ inline VideoFrameReleaser::~VideoFrameReleaser() = default;
 
 }  // namespace detail
 
-// Helper object that wraps VideoFrameCallback functionality
+// Helper object that wraps VideoFramesController functionality
 // Simplifies allocation and deletion of non-GC frames
 // in a safe manner.
-// Holds a strong reference to the VideoFrameCallback
+// Holds a strong reference to the VideoFramesController
 // TODO: Refactor to a class, groom, make non-copyable
 // TODO: Rename to ControllerHolder
 struct VideoFrameCallbackHolder
@@ -128,7 +129,7 @@ struct VideoFrameCallbackHolder
     callback_->queueFrame(timestamp, ptr.release());
   }
 
-  // Creates the holder based on VideoFrameCallback object
+  // Creates the holder based on VideoFramesController object
   static std::shared_ptr<VideoFrameCallbackHolder> unwrap(
       v8::Isolate* isolate,
       v8::Local<v8::Value> value) {
@@ -142,7 +143,7 @@ struct VideoFrameCallbackHolder
 
   VideoFrameCallbackHolder(v8::Isolate* isolate,
                            v8::Local<v8::Object> wrapper,
-                           VideoFrameCallback* cb);
+                           VideoFramesController* cb);
   ~VideoFrameCallbackHolder();
 
  private:
@@ -153,14 +154,14 @@ struct VideoFrameCallbackHolder
   v8::Global<v8::Object> wrapper_;
 
   // Controller
-  VideoFrameCallback* callback_;
+  VideoFramesController* callback_;
 };
 
 // TODO: Why are these inline? groom, move to .cc if possible
 inline VideoFrameCallbackHolder::VideoFrameCallbackHolder(
     v8::Isolate* isolate,
     v8::Local<v8::Object> wrapper,
-    VideoFrameCallback* cb)
+    VideoFramesController* cb)
     : wrapper_(isolate, wrapper), callback_(cb) {}
 
 inline VideoFrameCallbackHolder::~VideoFrameCallbackHolder() = default;

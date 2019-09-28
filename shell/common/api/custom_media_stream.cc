@@ -287,7 +287,7 @@ struct NonGCFrame final : CustomMediaStream::VideoFrame {
 // TODO: improve naming, may be name all wrappers as ***Wrapper?
 // TODO: turn into a class, groom
 // TODO: incapsulate private members, add accessors
-struct ControlObject final : CustomMediaStream::VideoFrameCallback {
+struct ControlObject final : CustomMediaStream::VideoFramesController {
   // Ctor sets only the weak reference to the wrapper
   // so you need to call wrapper() function after ctor
   // otherwise it will be garbage collected
@@ -306,7 +306,7 @@ struct ControlObject final : CustomMediaStream::VideoFrameCallback {
     auto w = this->wrapper();
     w->SetAlignedPointerInInternalField(0, this);
     w->SetAlignedPointerInInternalField(
-        1, static_cast<CustomMediaStream::VideoFrameCallback*>(this));
+        1, static_cast<CustomMediaStream::VideoFramesController*>(this));
   }
 
   v8::Local<v8::Object> wrapper() const {
@@ -383,7 +383,7 @@ struct ControlObject final : CustomMediaStream::VideoFrameCallback {
     frame->frame_ = nullptr;
   }
 
-  // Allocates a Non-GC wrapper for a media::VideoFrame
+  // Allocates a non-GC wrapper for a media::VideoFrame
   // timestamp is in milliseconds
   CustomMediaStream::VideoFrame* allocateFrame(double timestamp,
                                                const Format* format) override {
@@ -395,7 +395,7 @@ struct ControlObject final : CustomMediaStream::VideoFrameCallback {
     return new NonGCFrame(f);
   }
 
-  // Enqueues a Non-GC wrapper of a media::VideoFrame
+  // Enqueues a non-GC wrapper of a media::VideoFrame
   // timestamp is in milliseconds
   void queueFrame(double timestamp,
                   CustomMediaStream::VideoFrame* frame) override {
@@ -408,7 +408,7 @@ struct ControlObject final : CustomMediaStream::VideoFrameCallback {
     delete f;
   }
 
-  // Releases a Non-GC wrapper of a media::VideoFrame
+  // Releases a con-GC wrapper of a media::VideoFrame
   void releaseFrame(CustomMediaStream::VideoFrame* frame) override {
     NonGCFrame* f = static_cast<NonGCFrame*>(frame);
     delete f;
