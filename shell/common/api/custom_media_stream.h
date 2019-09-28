@@ -10,28 +10,27 @@
 
 namespace CustomMediaStream {
 
-// TODO: Make nested to VideoFrame
-enum class Plane { Y, U, V };
-
-// TODO: Make nested to VideoFrame
-struct Format {
-  unsigned width;
-  unsigned height;
-};
-
 // Frame interface for non-GC frames
 // (When accessing the API from C++)
-// TODO: Refactor to a class
-// TODO: add missing artuments names
-struct VideoFrame {
+class VideoFrame {
+ public:
+  // YUV Plane names
+  enum class Plane { Y, U, V };
+
+  // Frame format
+  struct Format {
+    int width = 0;
+    int height = 0;
+  };
+
   // Gets the frame format
   virtual Format format() = 0;
 
   // Gets the stride of the plane
-  virtual unsigned stride(Plane) = 0;
+  virtual int stride(Plane plane) = 0;
 
   // Gets rows count of the plane
-  virtual unsigned rows(Plane) = 0;
+  virtual int rows(Plane plane) = 0;
 
   // Gets data of the plane
   virtual void* data(Plane plane) = 0;
@@ -46,9 +45,11 @@ struct Timestamp {
 // (When accessing the API from C++)
 // TODO: Rename to VideoFrameControl ???
 struct VideoFrameCallback {
+  using Format = VideoFrame::Format;
+
   // Allocates a frame of the specific format
   virtual VideoFrame* allocateFrame(Timestamp ts,
-                                    Format const* format = nullptr) = 0;
+                                    const Format* format = nullptr) = 0;
 
   // Enqueues the frame
   virtual void queueFrame(Timestamp ts, VideoFrame* frame) = 0;
@@ -108,15 +109,16 @@ inline VideoFrameReleaser::~VideoFrameReleaser() = default;
 // TODO: Rename to ControllerHolder
 struct VideoFrameCallbackHolder
     : std::enable_shared_from_this<VideoFrameCallbackHolder> {
+  using Format = VideoFrame::Format;
   using FramePtr = std::unique_ptr<VideoFrame, detail::VideoFrameReleaser>;
 
   // Allocates a frame with a specific format
-  FramePtr allocate(Timestamp ts, Format const* format) {
+  FramePtr allocate(Timestamp ts, const Format* format) {
     return {callback_->allocateFrame(ts, format),
             detail::VideoFrameReleaser(shared_from_this())};
   }
   // TODO: Move implementations to .cc
-  FramePtr allocate(Timestamp ts, Format const& f) { return allocate(ts, &f); }
+  FramePtr allocate(Timestamp ts, const Format& f) { return allocate(ts, &f); }
   FramePtr allocate(Timestamp ts) { return allocate(ts, nullptr); }
 
   void queue(Timestamp ts, FramePtr ptr) {

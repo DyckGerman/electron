@@ -230,46 +230,47 @@ struct Frame : mate::Wrappable<Frame> {
 // Non-GC wrapper for a media::VideoFrame object
 // (When accessing the API from C++)
 // TODO: Create helpers that convert plane enums
+// TODO: Add explicit virtual keyword
 struct NonGCFrame final : CustomMediaStream::VideoFrame {
   explicit NonGCFrame(scoped_refptr<media::VideoFrame> frame) : frame_(frame) {}
 
-  CustomMediaStream::Format format() override {
+  Format format() override {
     return {frame_->visible_rect().width(), frame_->visible_rect().height()};
   }
 
-  unsigned stride(CustomMediaStream::Plane plane) override {
+  int stride(Plane plane) override {
     switch (plane) {
-      case CustomMediaStream::Plane::Y:
+      case Plane::Y:
         return frame_->stride(media::VideoFrame::kYPlane);
-      case CustomMediaStream::Plane::U:
+      case Plane::U:
         return frame_->stride(media::VideoFrame::kUPlane);
-      case CustomMediaStream::Plane::V:
+      case Plane::V:
         return frame_->stride(media::VideoFrame::kVPlane);
       default:
         return 0;
     }
   }
 
-  unsigned rows(CustomMediaStream::Plane plane) override {
+  int rows(Plane plane) override {
     switch (plane) {
-      case CustomMediaStream::Plane::Y:
+      case Plane::Y:
         return frame_->rows(media::VideoFrame::kYPlane);
-      case CustomMediaStream::Plane::U:
+      case Plane::U:
         return frame_->rows(media::VideoFrame::kUPlane);
-      case CustomMediaStream::Plane::V:
+      case Plane::V:
         return frame_->rows(media::VideoFrame::kVPlane);
       default:
         return 0;
     }
   }
 
-  void* data(CustomMediaStream::Plane plane) override {
+  void* data(Plane plane) override {
     switch (plane) {
-      case CustomMediaStream::Plane::Y:
+      case Plane::Y:
         return frame_->visible_data(media::VideoFrame::kYPlane);
-      case CustomMediaStream::Plane::U:
+      case Plane::U:
         return frame_->visible_data(media::VideoFrame::kUPlane);
-      case CustomMediaStream::Plane::V:
+      case Plane::V:
         return frame_->visible_data(media::VideoFrame::kVPlane);
       default:
         return nullptr;
@@ -383,9 +384,8 @@ struct ControlObject final : CustomMediaStream::VideoFrameCallback {
   }
 
   // Allocates a Non-GC wrapper for a media::VideoFrame
-  CustomMediaStream::VideoFrame* allocateFrame(
-      CustomMediaStream::Timestamp ts,
-      CustomMediaStream::Format const* format) override {
+  CustomMediaStream::VideoFrame* allocateFrame(CustomMediaStream::Timestamp ts,
+                                               const Format* format) override {
     gfx::Size size =
         format ? gfx::Size{format->width, format->height} : resolution_;
     auto f = framePool_.CreateFrame(
