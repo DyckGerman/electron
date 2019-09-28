@@ -43,16 +43,13 @@ class VideoFramesController {
  public:
   using Format = VideoFrame::Format;
 
-  // Retrieves VideoFramesController pointer from an internal field of an object
-  static VideoFramesController* unwrap(v8::Local<v8::Value> value) {
-    if (!value->IsObject())
+  // Retrieves VideoFramesController pointer
+  // from an internal field of the wrapper
+  static VideoFramesController* unwrap(v8::Local<v8::Object> wrapper) {
+    if (wrapper->InternalFieldCount() != 2)
       return nullptr;
 
-    auto obj = v8::Local<v8::Object>::Cast(value);
-    if (obj->InternalFieldCount() != 2)
-      return nullptr;
-
-    void* ptr = obj->GetAlignedPointerFromInternalField(1);
+    void* ptr = wrapper->GetAlignedPointerFromInternalField(1);
     return static_cast<VideoFramesController*>(ptr);
   }
 
@@ -72,71 +69,72 @@ class VideoFramesController {
 // Helper object that wraps VideoFramesController functionality
 // Simplifies allocation and deletion of non-GC frames
 // in a safe manner.
-// Holds a strong reference to the VideoFramesController
-// TODO: Refactor to a class, groom, make non-copyable
-// TODO: Rename to ControllerHolder
-struct VideoFrameCallbackHolder
-    : std::enable_shared_from_this<VideoFrameCallbackHolder> {
+// Holds a strong reference to the VideoFramesController wrapper
+class ControllerHolder : std::enable_shared_from_this<ControllerHolder> {
+ public:
   using Format = VideoFrame::Format;
   using FramePtr =
       std::unique_ptr<VideoFrame, std::function<void(VideoFrame*)>>;
+  using HolderPtr = std::shared_ptr<ControllerHolder>;
 
-  // Allocates a frame with a specific format
+  // Creates the holder based on VideoFramesController wrapper object
+  static HolderPtr create(v8::Isolate* isolate, v8::Local<v8::Object> wrapper) {
+    auto* controller = VideoFramesController::unwrap(wrapper);
+    if (!controller)
+      return nullptr;
+
+    auto* holder = new ControllerHolder(isolate, wrapper, controller);
+    return HolderPtr(holder);
+  }
+
+  ~ControllerHolder();
+
+  // Allocates a frame of the specific format
   // timestamp is in milliseconds
   FramePtr allocate(double timestamp, const Format* format) {
     auto sharedThis = shared_from_this();
     auto frameDeleter = [sharedThis](VideoFrame* f) {
-      sharedThis->callback_->releaseFrame(f);
+      sharedThis->controller_->releaseFrame(f);
     };
 
-    return FramePtr(callback_->allocateFrame(timestamp, format), frameDeleter);
+    return FramePtr(controller_->allocateFrame(timestamp, format),
+                    frameDeleter);
   }
-  // TODO: Move implementations to .cc
+
+  // Allocates a frame of the specific format
+  // timestamp is in milliseconds
   FramePtr allocate(double timestamp, const Format& f) {
     return allocate(timestamp, &f);
   }
 
+  // Allocates a frame of a format that was passed to createTrack from JS
+  // timestamp is in milliseconds
   FramePtr allocate(double timestamp) { return allocate(timestamp, nullptr); }
 
   // Enqueues the frame
   // timestamp is in milliseconds
   void queue(double timestamp, FramePtr ptr) {
-    callback_->queueFrame(timestamp, ptr.release());
+    controller_->queueFrame(timestamp, ptr.release());
   }
-
-  // Creates the holder based on VideoFramesController object
-  static std::shared_ptr<VideoFrameCallbackHolder> unwrap(
-      v8::Isolate* isolate,
-      v8::Local<v8::Value> value) {
-    auto* cb = VideoFramesController::unwrap(value);
-    if (cb) {
-      return std::make_shared<VideoFrameCallbackHolder>(
-          isolate, v8::Local<v8::Object>::Cast(value), cb);
-    }
-    return nullptr;
-  }
-
-  VideoFrameCallbackHolder(v8::Isolate* isolate,
-                           v8::Local<v8::Object> wrapper,
-                           VideoFramesController* cb);
-  ~VideoFrameCallbackHolder();
 
  private:
+  ControllerHolder(v8::Isolate* isolate,
+                   v8::Local<v8::Object> wrapper,
+                   VideoFramesController* controller);
+
   // Controller wrapper
   v8::Global<v8::Object> wrapper_;
 
   // Controller
-  VideoFramesController* callback_;
+  VideoFramesController* controller_;
 };
 
-// TODO: Why are these inline? groom, move to .cc if possible
-inline VideoFrameCallbackHolder::VideoFrameCallbackHolder(
-    v8::Isolate* isolate,
-    v8::Local<v8::Object> wrapper,
-    VideoFramesController* cb)
-    : wrapper_(isolate, wrapper), callback_(cb) {}
+inline ControllerHolder::ControllerHolder(v8::Isolate* isolate,
+                                          v8::Local<v8::Object> wrapper,
+                                          VideoFramesController* controller)
+    : wrapper_(isolate, wrapper), controller_(controller) {}
 
-inline VideoFrameCallbackHolder::~VideoFrameCallbackHolder() = default;
+inline ControllerHolder::~ControllerHolder() {}
 
 }  // namespace CustomMediaStream
 
