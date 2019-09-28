@@ -1,4 +1,4 @@
-// Copyright (c) 2014 GitHub, Inc.
+// Copyright (c) 2019 GitHub, Inc.
 // Use of this source code is governed by the MIT license that can be
 // found in the LICENSE file.
 
@@ -36,11 +36,6 @@ class VideoFrame {
   virtual void* data(Plane plane) = 0;
 };
 
-// TODO: Why is this a thing? use double directly
-struct Timestamp {
-  double milliseconds;
-};
-
 // Controller object interface for non-GC frames
 // (When accessing the API from C++)
 // TODO: Rename to VideoFrameControl ???
@@ -48,11 +43,13 @@ struct VideoFrameCallback {
   using Format = VideoFrame::Format;
 
   // Allocates a frame of the specific format
-  virtual VideoFrame* allocateFrame(Timestamp ts,
+  // timestamp is in milliseconds
+  virtual VideoFrame* allocateFrame(double timestamp,
                                     const Format* format = nullptr) = 0;
 
   // Enqueues the frame
-  virtual void queueFrame(Timestamp ts, VideoFrame* frame) = 0;
+  // timestamp is in milliseconds
+  virtual void queueFrame(double timestamp, VideoFrame* frame) = 0;
 
   // Releases the frame
   virtual void releaseFrame(VideoFrame* frame) = 0;
@@ -113,16 +110,22 @@ struct VideoFrameCallbackHolder
   using FramePtr = std::unique_ptr<VideoFrame, detail::VideoFrameReleaser>;
 
   // Allocates a frame with a specific format
-  FramePtr allocate(Timestamp ts, const Format* format) {
-    return {callback_->allocateFrame(ts, format),
+  // timestamp is in milliseconds
+  FramePtr allocate(double timestamp, const Format* format) {
+    return {callback_->allocateFrame(timestamp, format),
             detail::VideoFrameReleaser(shared_from_this())};
   }
   // TODO: Move implementations to .cc
-  FramePtr allocate(Timestamp ts, const Format& f) { return allocate(ts, &f); }
-  FramePtr allocate(Timestamp ts) { return allocate(ts, nullptr); }
+  FramePtr allocate(double timestamp, const Format& f) {
+    return allocate(timestamp, &f);
+  }
 
-  void queue(Timestamp ts, FramePtr ptr) {
-    callback_->queueFrame(ts, ptr.release());
+  FramePtr allocate(double timestamp) { return allocate(timestamp, nullptr); }
+
+  // Enqueues the frame
+  // timestamp is in milliseconds
+  void queue(double timestamp, FramePtr ptr) {
+    callback_->queueFrame(timestamp, ptr.release());
   }
 
   // Creates the holder based on VideoFrameCallback object

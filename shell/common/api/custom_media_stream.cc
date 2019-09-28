@@ -1,4 +1,4 @@
-// Copyright (c) 2014 GitHub, Inc.
+// Copyright (c) 2019 GitHub, Inc.
 // Use of this source code is governed by the MIT license that can be
 // found in the LICENSE file.
 
@@ -384,25 +384,27 @@ struct ControlObject final : CustomMediaStream::VideoFrameCallback {
   }
 
   // Allocates a Non-GC wrapper for a media::VideoFrame
-  CustomMediaStream::VideoFrame* allocateFrame(CustomMediaStream::Timestamp ts,
+  // timestamp is in milliseconds
+  CustomMediaStream::VideoFrame* allocateFrame(double timestamp,
                                                const Format* format) override {
     gfx::Size size =
         format ? gfx::Size{format->width, format->height} : resolution_;
     auto f = framePool_.CreateFrame(
         media::PIXEL_FORMAT_I420, size, gfx::Rect(size), size,
-        base::TimeDelta::FromMillisecondsD(ts.milliseconds));
+        base::TimeDelta::FromMillisecondsD(timestamp));
     return new NonGCFrame(f);
   }
 
   // Enqueues a Non-GC wrapper of a media::VideoFrame
-  void queueFrame(CustomMediaStream::Timestamp ts,
+  // timestamp is in milliseconds
+  void queueFrame(double timestamp,
                   CustomMediaStream::VideoFrame* frame) override {
     NonGCFrame* f = static_cast<NonGCFrame*>(frame);
     io_task_runner_->PostTask(
         FROM_HERE,
         base::Bind(deliver_, f->frame_,
                    base::TimeTicks::UnixEpoch() +
-                       base::TimeDelta::FromMillisecondsD(ts.milliseconds)));
+                       base::TimeDelta::FromMillisecondsD(timestamp)));
     delete f;
   }
 
