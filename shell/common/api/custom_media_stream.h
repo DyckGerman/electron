@@ -24,16 +24,16 @@ class VideoFrame {
   };
 
   // Gets the frame format
-  virtual Format format() = 0;
+  virtual Format format() const = 0;
 
   // Gets the stride of the plane
-  virtual int stride(Plane plane) = 0;
+  virtual int stride(Plane plane) const = 0;
 
   // Gets rows count of the plane
-  virtual int rows(Plane plane) = 0;
+  virtual int rows(Plane plane) const = 0;
 
   // Gets data of the plane
-  virtual void* data(Plane plane) = 0;
+  virtual void* data(Plane plane) const = 0;
 };
 
 // Controller object interface for non-GC frames
@@ -43,13 +43,16 @@ class VideoFramesController {
  public:
   using Format = VideoFrame::Format;
 
+  static const int kImplFieldIdx = 0;
+  static const int kInterfaceFieldIdx = 1;
+
   // Retrieves VideoFramesController pointer
   // from an internal field of the wrapper
   static VideoFramesController* unwrap(v8::Local<v8::Object> wrapper) {
     if (wrapper->InternalFieldCount() != 2)
       return nullptr;
 
-    void* ptr = wrapper->GetAlignedPointerFromInternalField(1);
+    void* ptr = wrapper->GetAlignedPointerFromInternalField(kInterfaceFieldIdx);
     return static_cast<VideoFramesController*>(ptr);
   }
 

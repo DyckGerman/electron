@@ -37,7 +37,7 @@
 
 namespace {
 
-struct ControlObject;
+class ControllerWrapper;
 
 }  // namespace
 
@@ -104,17 +104,17 @@ struct Converter<base::TimeTicks> {
   }
 };
 
-// ControlObject ptr to/from v8::Value mate converter
+// ControllerWrapper ptr to/from v8::Value mate converter
 // Note that ToV8 returns a v8::Object that has internal fields
-// while FromV8 just extracts ControlObject pointer from an
+// while FromV8 just extracts ControllerWrapper pointer from an
 // internal field
 template <>
-struct Converter<ControlObject*> {
-  static v8::Local<v8::Value> ToV8(v8::Isolate* isolate, ControlObject* v);
+struct Converter<ControllerWrapper*> {
+  static v8::Local<v8::Value> ToV8(v8::Isolate* isolate, ControllerWrapper* v);
 
   static bool FromV8(v8::Isolate* isolate,
                      v8::Local<v8::Value> value,
-                     ControlObject** out) {
+                     ControllerWrapper** out) {
     if (!value->IsObject())
       return false;
 
@@ -122,8 +122,9 @@ struct Converter<ControlObject*> {
     if (obj->InternalFieldCount() != 2)
       return false;
 
-    auto* ptr = obj->GetAlignedPointerFromInternalField(0);
-    *out = static_cast<ControlObject*>(ptr);
+    int fieldIdx = CustomMediaStream::VideoFramesController::kImplFieldIdx;
+    auto* ptr = obj->GetAlignedPointerFromInternalField(fieldIdx);
+    *out = static_cast<ControllerWrapper*>(ptr);
     return true;
   }
 };
@@ -244,54 +245,50 @@ class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
 
 // Non-GC wrapper for a media::VideoFrame object
 // (When accessing the API from C++)
-// TODO: Create helpers that convert plane enums
-// TODO: Add explicit virtual keyword
-struct NonGCFrame final : CustomMediaStream::VideoFrame {
-  explicit NonGCFrame(scoped_refptr<media::VideoFrame> frame) : frame_(frame) {}
+class NonGCFrameWrapper final : public CustomMediaStream::VideoFrame {
+ public:
+  explicit NonGCFrameWrapper(scoped_refptr<media::VideoFrame> frame)
+      : frame_(frame) {}
 
-  Format format() override {
+  // Gets the frame format
+  Format format() const override {
     return {frame_->visible_rect().width(), frame_->visible_rect().height()};
   }
 
-  int stride(Plane plane) override {
-    switch (plane) {
-      case Plane::Y:
-        return frame_->stride(media::VideoFrame::kYPlane);
-      case Plane::U:
-        return frame_->stride(media::VideoFrame::kUPlane);
-      case Plane::V:
-        return frame_->stride(media::VideoFrame::kVPlane);
-      default:
-        return 0;
-    }
+  // Gets the stride of the plane
+  int stride(Plane plane) const override {
+    return frame_->stride(CMSPlaneToMediaPlane(plane));
   }
 
-  int rows(Plane plane) override {
-    switch (plane) {
-      case Plane::Y:
-        return frame_->rows(media::VideoFrame::kYPlane);
-      case Plane::U:
-        return frame_->rows(media::VideoFrame::kUPlane);
-      case Plane::V:
-        return frame_->rows(media::VideoFrame::kVPlane);
-      default:
-        return 0;
-    }
+  // Gets rows count of the plane
+  int rows(Plane plane) const override {
+    return frame_->rows(CMSPlaneToMediaPlane(plane));
   }
 
-  void* data(Plane plane) override {
-    switch (plane) {
-      case Plane::Y:
-        return frame_->visible_data(media::VideoFrame::kYPlane);
-      case Plane::U:
-        return frame_->visible_data(media::VideoFrame::kUPlane);
-      case Plane::V:
-        return frame_->visible_data(media::VideoFrame::kVPlane);
-      default:
-        return nullptr;
-    }
+  // Gets data of the plane
+  void* data(Plane plane) const override {
+    return frame_->visible_data(CMSPlaneToMediaPlane(plane));
   }
 
+  // Gets the wrapped frame
+  scoped_refptr<media::VideoFrame> frame() { return frame_; }
+
+ private:
+  // Helper converter between plane types
+  static size_t CMSPlaneToMediaPlane(Plane p) {
+    switch (p) {
+      case Plane::Y:
+        return media::VideoFrame::kYPlane;
+      case Plane::U:
+        return media::VideoFrame::kUPlane;
+      case Plane::V:
+        return media::VideoFrame::kVPlane;
+      default:
+        return media::VideoFrame::kYPlane;
+    };
+  }
+
+  // Video frame
   scoped_refptr<media::VideoFrame> frame_;
 };
 
@@ -302,26 +299,27 @@ struct NonGCFrame final : CustomMediaStream::VideoFrame {
 // TODO: improve naming, may be name all wrappers as ***Wrapper?
 // TODO: turn into a class, groom
 // TODO: incapsulate private members, add accessors
-struct ControlObject final : CustomMediaStream::VideoFramesController {
+class ControllerWrapper final
+    : public CustomMediaStream::VideoFramesController {
+ public:
   // Ctor sets only the weak reference to the wrapper
   // so you need to call wrapper() function after ctor
   // otherwise it will be garbage collected
-  ControlObject(v8::Isolate* isolate, gfx::Size resolution)
+  ControllerWrapper(v8::Isolate* isolate, gfx::Size resolution)
       : isolate_(isolate), resolution_(resolution) {
     auto templ = GetConstructor(isolate);
+    auto ctx = isolate->GetCurrentContext();
 
     v8::Local<v8::Object> wrapper;
-    CHECK(templ->InstanceTemplate()
-              ->NewInstance(isolate->GetCurrentContext())
-              .ToLocal(&wrapper));
+    CHECK(templ->InstanceTemplate()->NewInstance(ctx).ToLocal(&wrapper));
 
     wrapper_.Reset(isolate, wrapper);
     wrapper_.SetWeak(this, FirstWeakCallback, v8::WeakCallbackType::kParameter);
 
-    auto w = this->wrapper();
-    w->SetAlignedPointerInInternalField(0, this);
-    w->SetAlignedPointerInInternalField(
-        1, static_cast<CustomMediaStream::VideoFramesController*>(this));
+    auto* base = static_cast<CustomMediaStream::VideoFramesController*>(this);
+    auto wrap = this->wrapper();
+    wrap->SetAlignedPointerInInternalField(kImplFieldIdx, this);
+    wrap->SetAlignedPointerInInternalField(kInterfaceFieldIdx, base);
   }
 
   v8::Local<v8::Object> wrapper() const {
@@ -330,12 +328,12 @@ struct ControlObject final : CustomMediaStream::VideoFramesController {
 
   v8::Isolate* isolate() const { return isolate_; }
 
-  ~ControlObject() {
+  ~ControllerWrapper() {
     if (wrapper_.IsEmpty())
       return;
 
-    wrapper()->SetAlignedPointerInInternalField(0, nullptr);
-    wrapper()->SetAlignedPointerInInternalField(1, nullptr);
+    wrapper()->SetAlignedPointerInInternalField(kImplFieldIdx, nullptr);
+    wrapper()->SetAlignedPointerInInternalField(kInterfaceFieldIdx, nullptr);
     wrapper_.ClearWeak();
     wrapper_.Reset();
   }
@@ -355,15 +353,15 @@ struct ControlObject final : CustomMediaStream::VideoFramesController {
   }
 
   static void FirstWeakCallback(
-      const v8::WeakCallbackInfo<ControlObject>& data) {
-    ControlObject* p = data.GetParameter();
+      const v8::WeakCallbackInfo<ControllerWrapper>& data) {
+    ControllerWrapper* p = data.GetParameter();
     p->wrapper_.Reset();
     data.SetSecondPassCallback(SecondWeakCallback);
   }
 
   static void SecondWeakCallback(
-      const v8::WeakCallbackInfo<ControlObject>& data) {
-    ControlObject* c = data.GetParameter();
+      const v8::WeakCallbackInfo<ControllerWrapper>& data) {
+    ControllerWrapper* c = data.GetParameter();
     delete c;
   }
 
@@ -372,15 +370,15 @@ struct ControlObject final : CustomMediaStream::VideoFramesController {
     prototype->SetClassName(
         mate::StringToV8(isolate, "CustomMediaStreamController"));
     mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
-        .SetMethod("allocateFrame", &ControlObject::allocate)
-        .SetMethod("queueFrame", &ControlObject::queue);
+        .SetMethod("allocateFrame", &ControllerWrapper::allocate)
+        .SetMethod("queueFrame", &ControllerWrapper::queue);
   }
 
   // Creates the object and sets a strong local ref to it
-  static std::pair<v8::Local<v8::Object>, ControlObject*> create(
+  static std::pair<v8::Local<v8::Object>, ControllerWrapper*> create(
       v8::Isolate* isolate,
       gfx::Size resolution) {
-    ControlObject* p = new ControlObject(isolate, resolution);
+    ControllerWrapper* p = new ControllerWrapper(isolate, resolution);
     return std::make_pair(p->wrapper(), p);
   }
 
@@ -406,17 +404,17 @@ struct ControlObject final : CustomMediaStream::VideoFramesController {
     auto f = framePool_.CreateFrame(
         media::PIXEL_FORMAT_I420, size, gfx::Rect(size), size,
         base::TimeDelta::FromMillisecondsD(timestamp));
-    return new NonGCFrame(f);
+    return new NonGCFrameWrapper(f);
   }
 
   // Enqueues a non-GC wrapper of a media::VideoFrame
   // timestamp is in milliseconds
   void queueFrame(double timestamp,
                   CustomMediaStream::VideoFrame* frame) override {
-    NonGCFrame* f = static_cast<NonGCFrame*>(frame);
+    NonGCFrameWrapper* f = static_cast<NonGCFrameWrapper*>(frame);
     io_task_runner_->PostTask(
         FROM_HERE,
-        base::Bind(deliver_, f->frame_,
+        base::Bind(deliver_, f->frame(),
                    base::TimeTicks::UnixEpoch() +
                        base::TimeDelta::FromMillisecondsD(timestamp)));
     delete f;
@@ -424,7 +422,7 @@ struct ControlObject final : CustomMediaStream::VideoFramesController {
 
   // Releases a con-GC wrapper of a media::VideoFrame
   void releaseFrame(CustomMediaStream::VideoFrame* frame) override {
-    NonGCFrame* f = static_cast<NonGCFrame*>(frame);
+    NonGCFrameWrapper* f = static_cast<NonGCFrameWrapper*>(frame);
     delete f;
   }
 
@@ -440,7 +438,7 @@ struct ControlObject final : CustomMediaStream::VideoFramesController {
   static gin::WrapperInfo kWrapperInfo;
 };
 
-gin::WrapperInfo ControlObject::kWrapperInfo = {gin::kEmbedderNativeGin};
+gin::WrapperInfo ControllerWrapper::kWrapperInfo = {gin::kEmbedderNativeGin};
 
 // Capture source object, holds the controller
 // and manages emission of frames
@@ -451,18 +449,18 @@ struct CustomCapturerSource : media::VideoCapturerSource {
       v8::Isolate* isolate,
       gfx::Size resolution,
       std::size_t framerate,
-      base::RepeatingCallback<void(ControlObject*)> onStartCapture,
+      base::RepeatingCallback<void(ControllerWrapper*)> onStartCapture,
       base::RepeatingCallback<void()> onStopCapture)
       : format_(resolution, framerate, media::PIXEL_FORMAT_I420),
         onStartCapture_(std::move(onStartCapture)),
         onStopCapture_(std::move(onStopCapture)) {
-    auto r = ControlObject::create(isolate, resolution);
+    auto r = ControllerWrapper::create(isolate, resolution);
     control_wrapper_ = v8::Global<v8::Value>(isolate, r.first);
     control_ = r.second;
   }
 
   ~CustomCapturerSource() override {
-    onStartCapture_ = base::RepeatingCallback<void(ControlObject*)>();
+    onStartCapture_ = base::RepeatingCallback<void(ControllerWrapper*)>();
     onStopCapture_ = base::RepeatingCallback<void()>();
     control_wrapper_.Reset();
   }
@@ -493,13 +491,13 @@ struct CustomCapturerSource : media::VideoCapturerSource {
   v8::Global<v8::Value> control_wrapper_;
 
   // Controller
-  ControlObject* control_;
+  ControllerWrapper* control_;
 
   // Video format specification
   media::VideoCaptureFormat format_;
 
   // User-defined startCapture callback
-  base::RepeatingCallback<void(ControlObject*)> onStartCapture_;
+  base::RepeatingCallback<void(ControllerWrapper*)> onStartCapture_;
 
   // User-defined stopCapture callback
   base::RepeatingCallback<void()> onStopCapture_;
@@ -513,7 +511,7 @@ blink::WebMediaStreamTrack createTrack(
     v8::Isolate* isolate,
     gfx::Size resolution,
     int framerate,
-    base::RepeatingCallback<void(ControlObject*)> onStartCapture,
+    base::RepeatingCallback<void(ControllerWrapper*)> onStartCapture,
     base::RepeatingCallback<void()> onStopCapture) {
   auto source = std::make_unique<CustomCapturerSource>(
       isolate, resolution, framerate, onStartCapture, onStopCapture);
@@ -556,8 +554,9 @@ void Initialize(v8::Local<v8::Object> exports,
 }  // namespace
 
 namespace mate {
-v8::Local<v8::Value> mate::Converter<ControlObject*>::ToV8(v8::Isolate* isolate,
-                                                           ControlObject* v) {
+v8::Local<v8::Value> mate::Converter<ControllerWrapper*>::ToV8(
+    v8::Isolate* isolate,
+    ControllerWrapper* v) {
   return v->wrapper();
 }
 }  // namespace mate
