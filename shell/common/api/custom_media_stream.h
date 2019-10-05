@@ -70,7 +70,8 @@ class VideoFramesController {
 // Simplifies allocation and deletion of non-GC frames
 // in a safe manner.
 // Holds a strong reference to the VideoFramesController wrapper
-class ControllerHolder : std::enable_shared_from_this<ControllerHolder> {
+class ControllerHolder final
+    : public std::enable_shared_from_this<ControllerHolder> {
  public:
   using Format = VideoFrame::Format;
   using FramePtr =
@@ -92,13 +93,13 @@ class ControllerHolder : std::enable_shared_from_this<ControllerHolder> {
   // Allocates a frame of the specific format
   // timestamp is in milliseconds
   FramePtr allocate(double timestamp, const Format* format) {
-    auto sharedThis = shared_from_this();
-    auto frameDeleter = [sharedThis](VideoFrame* f) {
-      sharedThis->controller_->releaseFrame(f);
+    auto shared_this = shared_from_this();
+    auto frame_deleter = [shared_this](VideoFrame* f) {
+      shared_this->controller_->releaseFrame(f);
     };
 
     return FramePtr(controller_->allocateFrame(timestamp, format),
-                    frameDeleter);
+                    frame_deleter);
   }
 
   // Allocates a frame of the specific format

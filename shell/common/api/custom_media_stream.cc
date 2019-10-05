@@ -10,10 +10,8 @@
 #include <third_party/blink/public/platform/web_media_stream_track.h>
 #undef INSIDE_BLINK
 
-// TODO: Check that all includes are required
 #include <base/base64.h>
 #include <base/rand_util.h>
-#include <base/strings/utf_string_conversions.h>
 
 #include <content/public/renderer/render_thread.h>
 #include <media/base/video_frame.h>
@@ -27,7 +25,6 @@
 #include <third_party/blink/renderer/modules/mediastream/media_stream_track.h>
 #include <third_party/blink/renderer/platform/bindings/to_v8.h>
 
-#include <iostream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -35,14 +32,14 @@
 #include "electron/shell/common/native_mate_converters/callback.h"
 #include "electron/shell/common/native_mate_converters/gfx_converter.h"
 #include "electron/shell/common/node_includes.h"
-#include "native_mate/arguments.h"
 #include "native_mate/dictionary.h"
-#include "native_mate/handle.h"
 #include "native_mate/wrappable.h"
 
 namespace {
+
 struct ControlObject;
-}
+
+}  // namespace
 
 namespace mate {
 
@@ -51,15 +48,14 @@ template <>
 struct Converter<blink::WebMediaStreamTrack> {
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
                                    blink::WebMediaStreamTrack track) {
-    return blink::ToV8(
-        blink::MediaStreamTrack::Create(
-            blink::ToExecutionContext(isolate->GetCurrentContext()), track),
-        isolate->GetCurrentContext()->Global(), isolate);
+    auto ctx = isolate->GetCurrentContext();
+    auto* exec_ctx = blink::ToExecutionContext(ctx);
+    auto* media_track = blink::MediaStreamTrack::Create(exec_ctx, track);
+    return blink::ToV8(media_track, ctx->Global(), isolate);
   }
 };
 
 // v8::ArrayBuffer to v8::Value mate converter
-// TODO: Why is this explicit? check if everyting compiles without it
 template <>
 struct Converter<v8::Local<v8::ArrayBuffer>> {
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
@@ -92,8 +88,8 @@ struct Converter<base::TimeDelta> {
 template <>
 struct Converter<base::TimeTicks> {
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate, base::TimeTicks v) {
-    return v8::Number::New(
-        isolate, (v - base::TimeTicks::UnixEpoch()).InMillisecondsF());
+    double ms = (v - base::TimeTicks::UnixEpoch()).InMillisecondsF();
+    return v8::Number::New(isolate, ms);
   }
 
   static bool FromV8(v8::Isolate* isolate,
@@ -109,12 +105,11 @@ struct Converter<base::TimeTicks> {
 };
 
 // ControlObject ptr to/from v8::Value mate converter
-// Note that ToV8 creates a new Local that has internal fields
-// while FromV8 just extracts ControlObject ptr from an
+// Note that ToV8 returns a v8::Object that has internal fields
+// while FromV8 just extracts ControlObject pointer from an
 // internal field
 template <>
 struct Converter<ControlObject*> {
-  // TODO: Why impl is not here?
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate, ControlObject* v);
 
   static bool FromV8(v8::Isolate* isolate,
@@ -124,12 +119,11 @@ struct Converter<ControlObject*> {
       return false;
 
     v8::Local<v8::Object> obj = v8::Local<v8::Object>::Cast(value);
-
     if (obj->InternalFieldCount() != 2)
       return false;
 
-    *out =
-        static_cast<ControlObject*>(obj->GetAlignedPointerFromInternalField(0));
+    auto* ptr = obj->GetAlignedPointerFromInternalField(0);
+    *out = static_cast<ControlObject*>(ptr);
     return true;
   }
 };
@@ -138,33 +132,50 @@ struct Converter<ControlObject*> {
 
 namespace {
 
-// TODO: Remove
-void test(mate::Arguments* args) {
-  std::cout << "test" << std::endl;
-}
-
 // GC wrapper for a media::VideoFrame object
 // (When accessing the API from JS)
 // TODO: groom, turn into a class
-struct Frame : mate::Wrappable<Frame> {
-  Frame(v8::Isolate* isolate, scoped_refptr<media::VideoFrame> frame)
+class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
+ public:
+  static void BuildPrototype(v8::Isolate* isolate,
+                             v8::Local<v8::FunctionTemplate> prototype) {
+    auto classname = mate::StringToV8(isolate, "CustomMediaStreamVideoFrame");
+    prototype->SetClassName(classname);
+
+    mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
+        .SetMethod("data", &FrameWrapper::data)
+        .SetMethod("stride", &FrameWrapper::stride)
+        .SetProperty("width", &FrameWrapper::width)
+        .SetProperty("height", &FrameWrapper::height)
+        .SetProperty("timestamp", &FrameWrapper::timestamp)
+        .SetProperty("y", &FrameWrapper::y)
+        .SetProperty("u", &FrameWrapper::u)
+        .SetProperty("v", &FrameWrapper::v);
+  }
+
+  FrameWrapper(v8::Isolate* isolate, scoped_refptr<media::VideoFrame> frame)
       : frame_(std::move(frame)) {
     Init(isolate);
   }
 
-  std::uint32_t width() {
+  // Gets the frame width
+  int width() const {
     if (!frame_)
       return 0;
+
     return frame_->visible_rect().width();
   }
 
-  std::uint32_t height() {
+  // Gets the frame height
+  int height() const {
     if (!frame_)
       return 0;
+
     return frame_->visible_rect().height();
   }
 
-  std::uint32_t stride(int plane) {
+  // Gets the stride of the plane
+  int stride(int plane) const {
     if (!frame_)
       return 0;
 
@@ -178,18 +189,19 @@ struct Frame : mate::Wrappable<Frame> {
     }
   }
 
-  base::TimeDelta timestamp() {
+  // Gets the frame timestamp
+  base::TimeDelta timestamp() const {
     if (!frame_)
-      return {};
+      return base::TimeDelta();
 
     return frame_->timestamp();
   }
 
   // Creates an ArrayBuffer over an existing memory
   // of the frame_, memory is freed only when frame_ is deleted
-  v8::Local<v8::ArrayBuffer> data(int plane) {
+  v8::Local<v8::ArrayBuffer> data(int plane) const {
     if (!frame_)
-      return {};
+      return v8::Local<v8::ArrayBuffer>();
 
     switch (plane) {
       case media::VideoFrame::kYPlane:
@@ -199,31 +211,34 @@ struct Frame : mate::Wrappable<Frame> {
             isolate(), frame_->visible_data(plane),
             frame_->stride(plane) * frame_->rows(plane));
       default:
-        return {};
+        return v8::Local<v8::ArrayBuffer>();
     }
   }
 
-  v8::Local<v8::ArrayBuffer> y() { return data(media::VideoFrame::kYPlane); }
-
-  v8::Local<v8::ArrayBuffer> u() { return data(media::VideoFrame::kUPlane); }
-
-  v8::Local<v8::ArrayBuffer> v() { return data(media::VideoFrame::kVPlane); }
-
-  static void BuildPrototype(v8::Isolate* isolate,
-                             v8::Local<v8::FunctionTemplate> prototype) {
-    prototype->SetClassName(
-        mate::StringToV8(isolate, "CustomMediaStreamVideoFrame"));
-    mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
-        .SetMethod("data", &Frame::data)
-        .SetMethod("stride", &Frame::stride)
-        .SetProperty("width", &Frame::width)
-        .SetProperty("height", &Frame::height)
-        .SetProperty("timestamp", &Frame::timestamp)
-        .SetProperty("y", &Frame::y)
-        .SetProperty("u", &Frame::u)
-        .SetProperty("v", &Frame::v);
+  // Gets an ArrayBuffer over the Y plane
+  v8::Local<v8::ArrayBuffer> y() const {
+    return data(media::VideoFrame::kYPlane);
   }
 
+  // Gets an ArrayBuffer over the U plane
+  v8::Local<v8::ArrayBuffer> u() const {
+    return data(media::VideoFrame::kUPlane);
+  }
+
+  // Gets an ArrayBuffer over the V plane
+  v8::Local<v8::ArrayBuffer> v() const {
+    return data(media::VideoFrame::kVPlane);
+  }
+
+  // Extracts the wrapped frame
+  scoped_refptr<media::VideoFrame> extractFrame() {
+    scoped_refptr<media::VideoFrame> ret;
+    ret.swap(frame_);
+    return ret;
+  }
+
+ private:
+  // Video frame
   scoped_refptr<media::VideoFrame> frame_;
 };
 
@@ -370,17 +385,16 @@ struct ControlObject final : CustomMediaStream::VideoFramesController {
   }
 
   // Allocates a GC wrapper for a media::VideoFrame
-  Frame* allocate(gfx::Size size, base::TimeDelta timestamp) {
+  FrameWrapper* allocate(gfx::Size size, base::TimeDelta timestamp) {
     auto f = framePool_.CreateFrame(media::PIXEL_FORMAT_I420, size,
                                     gfx::Rect(size), size, timestamp);
-    return new Frame(isolate(), f);
+    return new FrameWrapper(isolate(), f);
   }
 
   // Enqueues a GC wrapper of a media::VideoFrame
-  void queue(Frame* frame, base::TimeTicks timestamp) {
-    io_task_runner_->PostTask(FROM_HERE,
-                              base::Bind(deliver_, frame->frame_, timestamp));
-    frame->frame_ = nullptr;
+  void queue(FrameWrapper* framewapper, base::TimeTicks timestamp) {
+    auto f = framewapper->extractFrame();
+    io_task_runner_->PostTask(FROM_HERE, base::Bind(deliver_, f, timestamp));
   }
 
   // Allocates a non-GC wrapper for a media::VideoFrame
@@ -425,6 +439,8 @@ struct ControlObject final : CustomMediaStream::VideoFramesController {
 
   static gin::WrapperInfo kWrapperInfo;
 };
+
+gin::WrapperInfo ControlObject::kWrapperInfo = {gin::kEmbedderNativeGin};
 
 // Capture source object, holds the controller
 // and manages emission of frames
@@ -532,20 +548,18 @@ void Initialize(v8::Local<v8::Object> exports,
                 v8::Local<v8::Value> unused,
                 v8::Local<v8::Context> context,
                 void* priv) {
-  std::cout << "Initialize" << std::endl;
   mate::Dictionary dict(context->GetIsolate(), exports);
-  dict.SetMethod("test", &test);
+
   dict.SetMethod("createTrack", &createTrack);
 }
 
 }  // namespace
 
-// TODO: Why impl is here?
+namespace mate {
 v8::Local<v8::Value> mate::Converter<ControlObject*>::ToV8(v8::Isolate* isolate,
                                                            ControlObject* v) {
   return v->wrapper();
 }
-
-gin::WrapperInfo ControlObject::kWrapperInfo = {gin::kEmbedderNativeGin};
+}  // namespace mate
 
 NODE_LINKED_MODULE_CONTEXT_AWARE(atom_renderer_custom_media_stream, Initialize)
