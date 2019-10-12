@@ -135,7 +135,6 @@ namespace {
 
 // GC wrapper for a media::VideoFrame object
 // (When accessing the API from JS)
-// TODO: groom, turn into a class
 class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
  public:
   static void BuildPrototype(v8::Isolate* isolate,
@@ -296,15 +295,25 @@ class NonGCFrameWrapper final : public CustomMediaStream::VideoFrame {
 // and allows to allocate, enqueue and deallocate frames
 // NOTE: Not deriving from mate::wrappable because
 // we need 2 internal fields
-// TODO: improve naming, may be name all wrappers as ***Wrapper?
-// TODO: turn into a class, groom
-// TODO: incapsulate private members, add accessors
 class ControllerWrapper final
     : public CustomMediaStream::VideoFramesController {
  public:
+  using ControllerPtrs = std::pair<v8::Local<v8::Object>, ControllerWrapper*>;
+  using DeliverFrameCB = media::VideoCapturerSource::VideoCaptureDeliverFrameCB;
+  using TaskRunnerPtr = scoped_refptr<base::SingleThreadTaskRunner>;
+  using RenderThread = content::RenderThread;
+  using VideoFrame = CustomMediaStream::VideoFrame;
+
+  // Creates the object and sets a strong local ref to it
+  static ControllerPtrs create(v8::Isolate* isolate, gfx::Size resolution) {
+    auto* p = new ControllerWrapper(isolate, resolution);
+    return std::make_pair(p->wrapper(), p);
+  }
+
   // Ctor sets only the weak reference to the wrapper
   // so you need to call wrapper() function after ctor
-  // otherwise it will be garbage collected
+  // otherwise it will be garbage collected.
+  // Sets this and base pointers into the internal fields
   ControllerWrapper(v8::Isolate* isolate, gfx::Size resolution)
       : isolate_(isolate), resolution_(resolution) {
     auto templ = GetConstructor(isolate);
@@ -314,21 +323,14 @@ class ControllerWrapper final
     CHECK(templ->InstanceTemplate()->NewInstance(ctx).ToLocal(&wrapper));
 
     wrapper_.Reset(isolate, wrapper);
-    wrapper_.SetWeak(this, FirstWeakCallback, v8::WeakCallbackType::kParameter);
+    wrapper_.SetWeak(this, FirstCbk, v8::WeakCallbackType::kParameter);
 
     auto* base = static_cast<CustomMediaStream::VideoFramesController*>(this);
-    auto wrap = this->wrapper();
-    wrap->SetAlignedPointerInInternalField(kImplFieldIdx, this);
-    wrap->SetAlignedPointerInInternalField(kInterfaceFieldIdx, base);
+    wrapper->SetAlignedPointerInInternalField(kImplFieldIdx, this);
+    wrapper->SetAlignedPointerInInternalField(kInterfaceFieldIdx, base);
   }
 
-  v8::Local<v8::Object> wrapper() const {
-    return v8::Local<v8::Object>::New(isolate_, wrapper_);
-  }
-
-  v8::Isolate* isolate() const { return isolate_; }
-
-  ~ControllerWrapper() {
+  ~ControllerWrapper() override {
     if (wrapper_.IsEmpty())
       return;
 
@@ -338,7 +340,60 @@ class ControllerWrapper final
     wrapper_.Reset();
   }
 
-  // Creates or retrieves an existing function template of this object
+  // Creates a strong local ref
+  v8::Local<v8::Object> wrapper() const {
+    return v8::Local<v8::Object>::New(isolate(), wrapper_);
+  }
+
+  // Gets the isolate
+  v8::Isolate* isolate() const { return isolate_; }
+
+  // Sets the frame deliver callback
+  void setDeliverCb(const DeliverFrameCB& cb) { deliver_ = cb; }
+
+  // Allocates a GC wrapper for a media::VideoFrame
+  FrameWrapper* allocateGCFrame(gfx::Size size, base::TimeDelta timestamp) {
+    auto f = framePool_.CreateFrame(media::PIXEL_FORMAT_I420, size,
+                                    gfx::Rect(size), size, timestamp);
+    return new FrameWrapper(isolate(), f);
+  }
+
+  // Enqueues a GC wrapper of a media::VideoFrame
+  // Frame will be delivered in a renderer thread queue
+  void queueGCFrame(FrameWrapper* framewapper, base::TimeTicks timestamp) {
+    auto f = framewapper->extractFrame();
+    io_task_runner_->PostTask(FROM_HERE, base::Bind(deliver_, f, timestamp));
+  }
+
+  // Allocates a non-GC wrapper for a media::VideoFrame
+  // timestamp is in milliseconds
+  VideoFrame* allocateFrame(double timestamp, const Format* format) override {
+    auto size = format ? gfx::Size(format->width, format->height) : resolution_;
+    auto f = framePool_.CreateFrame(
+        media::PIXEL_FORMAT_I420, size, gfx::Rect(size), size,
+        base::TimeDelta::FromMillisecondsD(timestamp));
+    return new NonGCFrameWrapper(f);
+  }
+
+  // Enqueues a non-GC wrapper of a media::VideoFrame
+  // Frame will be delivered in a renderer thread queue
+  // timestamp is in milliseconds
+  void queueFrame(double timestamp, VideoFrame* frame) override {
+    auto f = static_cast<NonGCFrameWrapper*>(frame)->frame();
+    auto delta = base::TimeDelta::FromMillisecondsD(timestamp);
+    auto ticks = base::TimeTicks::UnixEpoch() + delta;
+    io_task_runner_->PostTask(FROM_HERE, base::Bind(deliver_, f, ticks));
+    delete frame;
+  }
+
+  // Releases a con-GC wrapper of a media::VideoFrame
+  void releaseFrame(VideoFrame* frame) override {
+    NonGCFrameWrapper* f = static_cast<NonGCFrameWrapper*>(frame);
+    delete f;
+  }
+
+ private:
+  // Creates or retrieves an existing function template of this wrapper
   // and sets up instance and prototype templates
   static v8::Local<v8::FunctionTemplate> GetConstructor(v8::Isolate* isolate) {
     auto* data = gin::PerIsolateData::From(isolate);
@@ -352,90 +407,50 @@ class ControllerWrapper final
     return templ;
   }
 
-  static void FirstWeakCallback(
-      const v8::WeakCallbackInfo<ControllerWrapper>& data) {
-    ControllerWrapper* p = data.GetParameter();
-    p->wrapper_.Reset();
-    data.SetSecondPassCallback(SecondWeakCallback);
+  // Registers methods for the prototype template
+  static void BuildPrototype(v8::Isolate* isolate,
+                             v8::Local<v8::FunctionTemplate> prototype) {
+    auto classname = mate::StringToV8(isolate, "CustomMediaStreamController");
+    prototype->SetClassName(classname);
+    mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
+        .SetMethod("allocateFrame", &ControllerWrapper::allocateGCFrame)
+        .SetMethod("queueFrame", &ControllerWrapper::queueGCFrame);
   }
 
-  static void SecondWeakCallback(
-      const v8::WeakCallbackInfo<ControllerWrapper>& data) {
-    ControllerWrapper* c = data.GetParameter();
+  // First weak callback, resets the weak ref
+  static void FirstCbk(const v8::WeakCallbackInfo<ControllerWrapper>& data) {
+    auto* p = data.GetParameter();
+    p->wrapper_.Reset();
+    data.SetSecondPassCallback(SecondCbk);
+  }
+
+  // Second weak callack, deletes the wrapper
+  static void SecondCbk(const v8::WeakCallbackInfo<ControllerWrapper>& data) {
+    auto* c = data.GetParameter();
     delete c;
   }
 
-  static void BuildPrototype(v8::Isolate* isolate,
-                             v8::Local<v8::FunctionTemplate> prototype) {
-    prototype->SetClassName(
-        mate::StringToV8(isolate, "CustomMediaStreamController"));
-    mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
-        .SetMethod("allocateFrame", &ControllerWrapper::allocate)
-        .SetMethod("queueFrame", &ControllerWrapper::queue);
-  }
-
-  // Creates the object and sets a strong local ref to it
-  static std::pair<v8::Local<v8::Object>, ControllerWrapper*> create(
-      v8::Isolate* isolate,
-      gfx::Size resolution) {
-    ControllerWrapper* p = new ControllerWrapper(isolate, resolution);
-    return std::make_pair(p->wrapper(), p);
-  }
-
-  // Allocates a GC wrapper for a media::VideoFrame
-  FrameWrapper* allocate(gfx::Size size, base::TimeDelta timestamp) {
-    auto f = framePool_.CreateFrame(media::PIXEL_FORMAT_I420, size,
-                                    gfx::Rect(size), size, timestamp);
-    return new FrameWrapper(isolate(), f);
-  }
-
-  // Enqueues a GC wrapper of a media::VideoFrame
-  void queue(FrameWrapper* framewapper, base::TimeTicks timestamp) {
-    auto f = framewapper->extractFrame();
-    io_task_runner_->PostTask(FROM_HERE, base::Bind(deliver_, f, timestamp));
-  }
-
-  // Allocates a non-GC wrapper for a media::VideoFrame
-  // timestamp is in milliseconds
-  CustomMediaStream::VideoFrame* allocateFrame(double timestamp,
-                                               const Format* format) override {
-    gfx::Size size =
-        format ? gfx::Size{format->width, format->height} : resolution_;
-    auto f = framePool_.CreateFrame(
-        media::PIXEL_FORMAT_I420, size, gfx::Rect(size), size,
-        base::TimeDelta::FromMillisecondsD(timestamp));
-    return new NonGCFrameWrapper(f);
-  }
-
-  // Enqueues a non-GC wrapper of a media::VideoFrame
-  // timestamp is in milliseconds
-  void queueFrame(double timestamp,
-                  CustomMediaStream::VideoFrame* frame) override {
-    NonGCFrameWrapper* f = static_cast<NonGCFrameWrapper*>(frame);
-    io_task_runner_->PostTask(
-        FROM_HERE,
-        base::Bind(deliver_, f->frame(),
-                   base::TimeTicks::UnixEpoch() +
-                       base::TimeDelta::FromMillisecondsD(timestamp)));
-    delete f;
-  }
-
-  // Releases a con-GC wrapper of a media::VideoFrame
-  void releaseFrame(CustomMediaStream::VideoFrame* frame) override {
-    NonGCFrameWrapper* f = static_cast<NonGCFrameWrapper*>(frame);
-    delete f;
-  }
-
-  v8::Isolate* isolate_;
-  v8::Global<v8::Object> wrapper_;  // Weak
-
-  gfx::Size resolution_;
-  media::VideoCapturerSource::VideoCaptureDeliverFrameCB deliver_;
-  media::VideoFramePool framePool_;
-  const scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_ =
-      content::RenderThread::Get()->GetIOTaskRunner();
-
+ private:
+  // Class-related wrapper info, its pointer is the key in the PerIsolate map
   static gin::WrapperInfo kWrapperInfo;
+
+  // Isolate
+  v8::Isolate* isolate_;
+
+  // Weak wrapper ref
+  v8::Global<v8::Object> wrapper_;
+
+  // Default frames resolution
+  gfx::Size resolution_;
+
+  // Video frames deliver callback, signalizes when a frame is ready
+  DeliverFrameCB deliver_;
+
+  // media frames pool
+  media::VideoFramePool framePool_;
+
+  // IO task runner, used to deliver the frames
+  const TaskRunnerPtr io_task_runner_ = RenderThread::Get()->GetIOTaskRunner();
 };
 
 gin::WrapperInfo ControllerWrapper::kWrapperInfo = {gin::kEmbedderNativeGin};
@@ -472,7 +487,7 @@ struct CustomCapturerSource : media::VideoCapturerSource {
   void StartCapture(const media::VideoCaptureParams& params,
                     const VideoCaptureDeliverFrameCB& frame_callback,
                     const RunningCallback& running_callback) override {
-    control_->deliver_ = frame_callback;
+    control_->setDeliverCb(frame_callback);
     running_callback.Run(true);
   }
 

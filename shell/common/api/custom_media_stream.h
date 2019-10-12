@@ -23,6 +23,8 @@ class VideoFrame {
     int height = 0;
   };
 
+  virtual ~VideoFrame() = default;
+
   // Gets the frame format
   virtual Format format() const = 0;
 
@@ -55,6 +57,8 @@ class VideoFramesController {
     void* ptr = wrapper->GetAlignedPointerFromInternalField(kInterfaceFieldIdx);
     return static_cast<VideoFramesController*>(ptr);
   }
+
+  virtual ~VideoFramesController() = default;
 
   // Allocates a frame of the specific format
   // timestamp is in milliseconds
