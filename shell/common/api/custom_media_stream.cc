@@ -353,8 +353,8 @@ class ControllerWrapper final
 
   // Allocates a GC wrapper for a media::VideoFrame
   FrameWrapper* allocateGCFrame(gfx::Size size, base::TimeDelta timestamp) {
-    auto f = framePool_.CreateFrame(media::PIXEL_FORMAT_I420, size,
-                                    gfx::Rect(size), size, timestamp);
+    auto f = frame_pool_.CreateFrame(media::PIXEL_FORMAT_I420, size,
+                                     gfx::Rect(size), size, timestamp);
     return new FrameWrapper(isolate(), f);
   }
 
@@ -369,7 +369,7 @@ class ControllerWrapper final
   // timestamp is in milliseconds
   VideoFrame* allocateFrame(double timestamp, const Format* format) override {
     auto size = format ? gfx::Size(format->width, format->height) : resolution_;
-    auto f = framePool_.CreateFrame(
+    auto f = frame_pool_.CreateFrame(
         media::PIXEL_FORMAT_I420, size, gfx::Rect(size), size,
         base::TimeDelta::FromMillisecondsD(timestamp));
     return new NonGCFrameWrapper(f);
@@ -447,7 +447,7 @@ class ControllerWrapper final
   DeliverFrameCB deliver_;
 
   // media frames pool
-  media::VideoFramePool framePool_;
+  media::VideoFramePool frame_pool_;
 
   // IO task runner, used to deliver the frames
   const TaskRunnerPtr io_task_runner_ = RenderThread::Get()->GetIOTaskRunner();
@@ -457,33 +457,34 @@ gin::WrapperInfo ControllerWrapper::kWrapperInfo = {gin::kEmbedderNativeGin};
 
 // Capture source object, holds the controller
 // and manages emission of frames
-// TODO: Mark virtual functions as virtual for better readibility
-// TODO: remove unnecessary move calls
-struct CustomCapturerSource : media::VideoCapturerSource {
+class CustomCapturerSource final : public media::VideoCapturerSource {
+ public:
   CustomCapturerSource(
       v8::Isolate* isolate,
       gfx::Size resolution,
       std::size_t framerate,
-      base::RepeatingCallback<void(ControllerWrapper*)> onStartCapture,
-      base::RepeatingCallback<void()> onStopCapture)
+      const base::RepeatingCallback<void(ControllerWrapper*)>& on_start_capture,
+      const base::RepeatingCallback<void()>& on_stop_capture)
       : format_(resolution, framerate, media::PIXEL_FORMAT_I420),
-        onStartCapture_(std::move(onStartCapture)),
-        onStopCapture_(std::move(onStopCapture)) {
-    auto r = ControllerWrapper::create(isolate, resolution);
-    control_wrapper_ = v8::Global<v8::Value>(isolate, r.first);
-    control_ = r.second;
+        on_start_capture_(on_start_capture),
+        on_stop_capture_(on_stop_capture) {
+    auto wrapper_ptrs = ControllerWrapper::create(isolate, resolution);
+    control_wrapper_ = v8::Global<v8::Value>(isolate, wrapper_ptrs.first);
+    control_ = wrapper_ptrs.second;
   }
 
   ~CustomCapturerSource() override {
-    onStartCapture_ = base::RepeatingCallback<void(ControllerWrapper*)>();
-    onStopCapture_ = base::RepeatingCallback<void()>();
+    on_start_capture_.Reset();
+    on_stop_capture_.Reset();
     control_wrapper_.Reset();
   }
 
+  // Gets the default frame format
   media::VideoCaptureFormats GetPreferredFormats() override {
     return {format_};
   }
 
+  // Called when a media stream is ready to receive frames
   void StartCapture(const media::VideoCaptureParams& params,
                     const VideoCaptureDeliverFrameCB& frame_callback,
                     const RunningCallback& running_callback) override {
@@ -491,17 +492,21 @@ struct CustomCapturerSource : media::VideoCapturerSource {
     running_callback.Run(true);
   }
 
+  // Called when a media stream wants no more frames
   void StopCapture() override {}
 
-  void Resume() override { onStartCapture_.Run(control_); }
+  // Called when a media stream gets the first cunsumer
+  void Resume() override { on_start_capture_.Run(control_); }
 
+  // Called when a media stream loses all the consumers
   void MaybeSuspend() override {
     // In some circumstances this can be called
-    // from Document::Shutdown
+    // from Document::Shutdown, thus this check
     if (!blink::ScriptForbiddenScope::IsScriptForbidden())
-      onStopCapture_.Run();
+      on_stop_capture_.Run();
   }
 
+ private:
   // Controller wrapper
   v8::Global<v8::Value> control_wrapper_;
 
@@ -512,42 +517,41 @@ struct CustomCapturerSource : media::VideoCapturerSource {
   media::VideoCaptureFormat format_;
 
   // User-defined startCapture callback
-  base::RepeatingCallback<void(ControllerWrapper*)> onStartCapture_;
+  base::RepeatingCallback<void(ControllerWrapper*)> on_start_capture_;
 
   // User-defined stopCapture callback
-  base::RepeatingCallback<void()> onStopCapture_;
+  base::RepeatingCallback<void()> on_stop_capture_;
 };
 
 // Creates a WebKit media stream track based on the
 // CustomCapturerSource which allows a user to
 // provide his frames
-// TODO: Groom
 blink::WebMediaStreamTrack createTrack(
     v8::Isolate* isolate,
     gfx::Size resolution,
     int framerate,
-    base::RepeatingCallback<void(ControllerWrapper*)> onStartCapture,
-    base::RepeatingCallback<void()> onStopCapture) {
-  auto source = std::make_unique<CustomCapturerSource>(
-      isolate, resolution, framerate, onStartCapture, onStopCapture);
+    base::RepeatingCallback<void(ControllerWrapper*)> on_start_capture,
+    base::RepeatingCallback<void()> on_stop_capture) {
+  std::string random_str;
+  base::Base64Encode(base::RandBytesAsString(64), &random_str);
+  const auto track_id = blink::WebString::FromASCII(random_str);
 
-  std::string str_track_id;
-  base::Base64Encode(base::RandBytesAsString(64), &str_track_id);
-  const blink::WebString track_id = blink::WebString::FromASCII(str_track_id);
-
+  auto custom_source = std::make_unique<CustomCapturerSource>(
+      isolate, resolution, framerate, on_start_capture, on_stop_capture);
   auto platform_source =
       std::make_unique<blink::MediaStreamVideoCapturerSource>(
           blink::WebPlatformMediaStreamSource::SourceStoppedCallback(),
-          std::move(source));
+          std::move(custom_source));
+  auto* platform_source_raw = platform_source.get();
 
-  blink::MediaStreamVideoCapturerSource* t = platform_source.get();
   blink::WebMediaStreamSource webkit_source;
   webkit_source.Initialize(track_id, blink::WebMediaStreamSource::kTypeVideo,
                            track_id, false);
   webkit_source.SetPlatformSource(std::move(platform_source));
 
   auto platform_track = std::make_unique<blink::MediaStreamVideoTrack>(
-      t, blink::MediaStreamVideoSource::ConstraintsCallback(), true);
+      platform_source_raw, blink::MediaStreamVideoSource::ConstraintsCallback(),
+      true);
 
   blink::WebMediaStreamTrack track;
   track.Initialize(webkit_source);
