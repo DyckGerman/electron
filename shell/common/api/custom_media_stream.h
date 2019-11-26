@@ -15,7 +15,7 @@ namespace CustomMediaStream {
 class VideoFrame {
  public:
   // YUV Plane names
-  enum class Plane { Y, U, V };
+  enum class Plane { Y, U, V, A };
 
   // Frame format
   struct Format {
@@ -33,6 +33,9 @@ class VideoFrame {
 
   // Gets rows count of the plane
   virtual int rows(Plane plane) const = 0;
+
+  // Gets bytes count per row of the plane
+  virtual int rowBytes(Plane plane) const = 0;
 
   // Gets data of the plane
   virtual void* data(Plane plane) const = 0;

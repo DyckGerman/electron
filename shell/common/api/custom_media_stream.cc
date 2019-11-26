@@ -145,12 +145,15 @@ class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
     mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
         .SetMethod("data", &FrameWrapper::data)
         .SetMethod("stride", &FrameWrapper::stride)
+        .SetMethod("rows", &FrameWrapper::rows)
+        .SetMethod("rowBytes", &FrameWrapper::rowBytes)
         .SetProperty("width", &FrameWrapper::width)
         .SetProperty("height", &FrameWrapper::height)
         .SetProperty("timestamp", &FrameWrapper::timestamp)
         .SetProperty("y", &FrameWrapper::y)
         .SetProperty("u", &FrameWrapper::u)
-        .SetProperty("v", &FrameWrapper::v);
+        .SetProperty("v", &FrameWrapper::v)
+        .SetProperty("v", &FrameWrapper::a);
   }
 
   FrameWrapper(v8::Isolate* isolate, scoped_refptr<media::VideoFrame> frame)
@@ -176,17 +179,26 @@ class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
 
   // Gets the stride of the plane
   int stride(int plane) const {
-    if (!frame_)
+    if (!frame_ || !IsValidMediaPlane(plane))
       return 0;
 
-    switch (plane) {
-      case media::VideoFrame::kYPlane:
-      case media::VideoFrame::kUPlane:
-      case media::VideoFrame::kVPlane:
-        return frame_->stride(plane);
-      default:
-        return 0;
-    }
+    return frame_->stride(IntPlaneToMediaPlane(plane));
+  }
+
+  // Gets rows count of the plane
+  int rows(int plane) const {
+    if (!frame_ || !IsValidMediaPlane(plane))
+      return 0;
+
+    return frame_->rows(IntPlaneToMediaPlane(plane));
+  }
+
+  // Gets bytes count per row of the plane
+  int rowBytes(int plane) const {
+    if (!frame_ || !IsValidMediaPlane(plane))
+      return 0;
+
+    return frame_->row_bytes(IntPlaneToMediaPlane(plane));
   }
 
   // Gets the frame timestamp
@@ -200,19 +212,13 @@ class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
   // Creates an ArrayBuffer over an existing memory
   // of the frame_, memory is freed only when frame_ is deleted
   v8::Local<v8::ArrayBuffer> data(int plane) const {
-    if (!frame_)
+    if (!frame_ || !IsValidMediaPlane(plane))
       return v8::Local<v8::ArrayBuffer>();
 
-    switch (plane) {
-      case media::VideoFrame::kYPlane:
-      case media::VideoFrame::kUPlane:
-      case media::VideoFrame::kVPlane:
-        return v8::ArrayBuffer::New(
-            isolate(), frame_->visible_data(plane),
-            frame_->stride(plane) * frame_->rows(plane));
-      default:
-        return v8::Local<v8::ArrayBuffer>();
-    }
+    size_t mediaPlane = IntPlaneToMediaPlane(plane);
+    return v8::ArrayBuffer::New(
+        isolate(), frame_->visible_data(mediaPlane),
+        frame_->stride(mediaPlane) * frame_->rows(mediaPlane));
   }
 
   // Gets an ArrayBuffer over the Y plane
@@ -230,6 +236,11 @@ class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
     return data(media::VideoFrame::kVPlane);
   }
 
+  // Gets an ArrayBuffer over the A plane
+  v8::Local<v8::ArrayBuffer> a() const {
+    return data(media::VideoFrame::kAPlane);
+  }
+
   // Extracts the wrapped frame
   scoped_refptr<media::VideoFrame> extractFrame() {
     scoped_refptr<media::VideoFrame> ret;
@@ -238,6 +249,25 @@ class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
   }
 
  private:
+  // Helper check that plane is valid
+  static bool IsValidMediaPlane(int p) { return (p >= 0 && p <= 3); }
+
+  // Helper converter between plane types
+  static size_t IntPlaneToMediaPlane(int p) {
+    switch (p) {
+      case 0:
+        return media::VideoFrame::kYPlane;
+      case 1:
+        return media::VideoFrame::kUPlane;
+      case 2:
+        return media::VideoFrame::kVPlane;
+      case 3:
+        return media::VideoFrame::kAPlane;
+      default:
+        return media::VideoFrame::kYPlane;
+    };
+  }
+
   // Video frame
   scoped_refptr<media::VideoFrame> frame_;
 };
@@ -264,6 +294,11 @@ class NonGCFrameWrapper final : public CustomMediaStream::VideoFrame {
     return frame_->rows(CMSPlaneToMediaPlane(plane));
   }
 
+  // Gets bytes count per row of the plane
+  int rowBytes(Plane plane) const override {
+    return frame_->row_bytes(CMSPlaneToMediaPlane(plane));
+  }
+
   // Gets data of the plane
   void* data(Plane plane) const override {
     return frame_->visible_data(CMSPlaneToMediaPlane(plane));
@@ -282,6 +317,8 @@ class NonGCFrameWrapper final : public CustomMediaStream::VideoFrame {
         return media::VideoFrame::kUPlane;
       case Plane::V:
         return media::VideoFrame::kVPlane;
+      case Plane::A:
+        return media::VideoFrame::kAPlane;
       default:
         return media::VideoFrame::kYPlane;
     };
