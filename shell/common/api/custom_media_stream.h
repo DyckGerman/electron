@@ -17,8 +17,17 @@ class VideoFrame {
   // YUV Plane names
   enum class Plane { Y, U, V, A };
 
+  // Pixel format
+  enum class PixelFormat {
+    UNKNOWN,  // Unknown or unspecified format value.
+    I420,     // 12bpp YUV planar 1x1 Y, 2x2 UV samples, a.k.a. YU12.
+    ARGB,     // 32bpp BGRA (byte-order), 1 plane.
+    ABGR      // 32bpp RGBA (byte-order), 1 plane.
+  };
+
   // Frame format
   struct Format {
+    PixelFormat pixel_format = PixelFormat::UNKNOWN;
     int width = 0;
     int height = 0;
   };

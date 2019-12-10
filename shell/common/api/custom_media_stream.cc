@@ -276,12 +276,65 @@ class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
 // (When accessing the API from C++)
 class NonGCFrameWrapper final : public CustomMediaStream::VideoFrame {
  public:
+  using CMSPixelFormat = CustomMediaStream::VideoFrame::PixelFormat;
+
+  // Converts from PixelFormat to media::VideoPixelFormat
+  static media::VideoPixelFormat CMSToMediaPixelFormat(CMSPixelFormat cms_pf) {
+    switch (cms_pf) {
+      case CMSPixelFormat::I420:
+        return media::PIXEL_FORMAT_I420;
+      case CMSPixelFormat::ARGB:
+        return media::PIXEL_FORMAT_ARGB;
+      case CMSPixelFormat::ABGR:
+        return media::PIXEL_FORMAT_ABGR;
+      default:
+        return media::PIXEL_FORMAT_UNKNOWN;
+    }
+  }
+
+  // Converts from media::VideoPixelFormat to PixelFormat
+  static CMSPixelFormat MediaToCMSPixelFormat(
+      media::VideoPixelFormat media_pf) {
+    switch (media_pf) {
+      case media::PIXEL_FORMAT_I420:
+        return CMSPixelFormat::I420;
+      case media::PIXEL_FORMAT_ARGB:
+        return CMSPixelFormat::ARGB;
+      case media::PIXEL_FORMAT_ABGR:
+        return CMSPixelFormat::ABGR;
+      default:
+        return CMSPixelFormat::UNKNOWN;
+    }
+  }
+
+  // Converts from int to PixelFormat
+  static CMSPixelFormat IntToCMSPixelFormat(int pf) {
+    switch (pf) {
+      case 1:
+        return CMSPixelFormat::I420;
+      case 2:
+        return CMSPixelFormat::ARGB;
+      case 3:
+        return CMSPixelFormat::ABGR;
+      default:
+        return CMSPixelFormat::UNKNOWN;
+    }
+  }
+
+  // Converts from int to media::VideoPixelFormat
+  static media::VideoPixelFormat IntToMediaPixelFormat(int pf) {
+    return CMSToMediaPixelFormat(IntToCMSPixelFormat(pf));
+  }
+
   explicit NonGCFrameWrapper(scoped_refptr<media::VideoFrame> frame)
       : frame_(frame) {}
 
   // Gets the frame format
   Format format() const override {
-    return {frame_->visible_rect().width(), frame_->visible_rect().height()};
+    Format fmt = {MediaToCMSPixelFormat(frame_->format()),
+                  frame_->visible_rect().width(),
+                  frame_->visible_rect().height()};
+    return fmt;
   }
 
   // Gets the stride of the plane
@@ -340,10 +393,13 @@ class ControllerWrapper final
   using TaskRunnerPtr = scoped_refptr<base::SingleThreadTaskRunner>;
   using RenderThread = content::RenderThread;
   using VideoFrame = CustomMediaStream::VideoFrame;
+  using CMSPixelFormat = VideoFrame::PixelFormat;
 
   // Creates the object and sets a strong local ref to it
-  static ControllerPtrs create(v8::Isolate* isolate, gfx::Size resolution) {
-    auto* p = new ControllerWrapper(isolate, resolution);
+  static ControllerPtrs create(v8::Isolate* isolate,
+                               gfx::Size resolution,
+                               CMSPixelFormat pixel_format) {
+    auto* p = new ControllerWrapper(isolate, resolution, pixel_format);
     return std::make_pair(p->wrapper(), p);
   }
 
@@ -351,8 +407,10 @@ class ControllerWrapper final
   // so you need to call wrapper() function after ctor
   // otherwise it will be garbage collected.
   // Sets this and base pointers into the internal fields
-  ControllerWrapper(v8::Isolate* isolate, gfx::Size resolution)
-      : isolate_(isolate), resolution_(resolution) {
+  ControllerWrapper(v8::Isolate* isolate,
+                    gfx::Size resolution,
+                    CMSPixelFormat cms_pf)
+      : isolate_(isolate), resolution_(resolution), pixel_format_(cms_pf) {
     auto templ = GetConstructor(isolate);
     auto ctx = isolate->GetCurrentContext();
 
@@ -389,9 +447,12 @@ class ControllerWrapper final
   void setDeliverCb(const DeliverFrameCB& cb) { deliver_ = cb; }
 
   // Allocates a GC wrapper for a media::VideoFrame
-  FrameWrapper* allocateGCFrame(gfx::Size size, base::TimeDelta timestamp) {
-    auto f = frame_pool_.CreateFrame(media::PIXEL_FORMAT_I420, size,
-                                     gfx::Rect(size), size, timestamp);
+  FrameWrapper* allocateGCFrame(gfx::Size size,
+                                int pixelFormat,
+                                base::TimeDelta timestamp) {
+    auto media_pf = NonGCFrameWrapper::IntToMediaPixelFormat(pixelFormat);
+    auto f = frame_pool_.CreateFrame(media_pf, size, gfx::Rect(size), size,
+                                     timestamp);
     return new FrameWrapper(isolate(), f);
   }
 
@@ -406,9 +467,12 @@ class ControllerWrapper final
   // timestamp is in milliseconds
   VideoFrame* allocateFrame(double timestamp, const Format* format) override {
     auto size = format ? gfx::Size(format->width, format->height) : resolution_;
-    auto f = frame_pool_.CreateFrame(
-        media::PIXEL_FORMAT_I420, size, gfx::Rect(size), size,
-        base::TimeDelta::FromMillisecondsD(timestamp));
+    auto pf = format ? format->pixel_format : pixel_format_;
+    auto media_pf = NonGCFrameWrapper::CMSToMediaPixelFormat(pf);
+
+    auto f =
+        frame_pool_.CreateFrame(media_pf, size, gfx::Rect(size), size,
+                                base::TimeDelta::FromMillisecondsD(timestamp));
     return new NonGCFrameWrapper(f);
   }
 
@@ -480,6 +544,9 @@ class ControllerWrapper final
   // Default frames resolution
   gfx::Size resolution_;
 
+  // Default pixel format
+  CMSPixelFormat pixel_format_;
+
   // Video frames deliver callback, signalizes when a frame is ready
   DeliverFrameCB deliver_;
 
@@ -496,16 +563,21 @@ gin::WrapperInfo ControllerWrapper::kWrapperInfo = {gin::kEmbedderNativeGin};
 // and manages emission of frames
 class CustomCapturerSource final : public media::VideoCapturerSource {
  public:
+  using CMSPixelFormat = CustomMediaStream::VideoFrame::PixelFormat;
+
   CustomCapturerSource(
       v8::Isolate* isolate,
       gfx::Size resolution,
       std::size_t framerate,
+      CMSPixelFormat pixel_format,
       const base::RepeatingCallback<void(ControllerWrapper*)>& on_start_capture,
       const base::RepeatingCallback<void()>& on_stop_capture)
-      : format_(resolution, framerate, media::PIXEL_FORMAT_I420),
-        on_start_capture_(on_start_capture),
-        on_stop_capture_(on_stop_capture) {
-    auto wrapper_ptrs = ControllerWrapper::create(isolate, resolution);
+      : on_start_capture_(on_start_capture), on_stop_capture_(on_stop_capture) {
+    format_ = {resolution, framerate,
+               NonGCFrameWrapper::CMSToMediaPixelFormat(pixel_format)};
+
+    auto wrapper_ptrs =
+        ControllerWrapper::create(isolate, resolution, pixel_format);
     control_wrapper_ = v8::Global<v8::Value>(isolate, wrapper_ptrs.first);
     control_ = wrapper_ptrs.second;
   }
@@ -567,14 +639,18 @@ blink::WebMediaStreamTrack createTrack(
     v8::Isolate* isolate,
     gfx::Size resolution,
     int framerate,
+    int pixel_format,
     base::RepeatingCallback<void(ControllerWrapper*)> on_start_capture,
     base::RepeatingCallback<void()> on_stop_capture) {
   std::string random_str;
   base::Base64Encode(base::RandBytesAsString(64), &random_str);
   const auto track_id = blink::WebString::FromASCII(random_str);
 
+  auto cms_pf = NonGCFrameWrapper::IntToCMSPixelFormat(pixel_format);
+
   auto custom_source = std::make_unique<CustomCapturerSource>(
-      isolate, resolution, framerate, on_start_capture, on_stop_capture);
+      isolate, resolution, framerate, cms_pf, on_start_capture,
+      on_stop_capture);
   auto platform_source =
       std::make_unique<blink::MediaStreamVideoCapturerSource>(
           blink::WebPlatformMediaStreamSource::SourceStoppedCallback(),
