@@ -24,6 +24,7 @@
 #include <third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h>
 #include <third_party/blink/renderer/modules/mediastream/media_stream_track.h>
 #include <third_party/blink/renderer/platform/bindings/to_v8.h>
+#include "third_party/libyuv/include/libyuv.h"
 
 #include <memory>
 #include <string>
@@ -456,6 +457,108 @@ class ControllerWrapper final
     return new FrameWrapper(isolate(), f);
   }
 
+  scoped_refptr<media::VideoFrame> ConvertToYUVFrame(
+      const scoped_refptr<media::VideoFrame>& frame) {
+    if (frame == nullptr)
+      return nullptr;
+
+    auto format = frame->format();
+
+    int (*ConvertToI420)(const uint8_t* src_argb, int src_stride_argb,
+                         uint8_t* dst_y, int dst_stride_y, uint8_t* dst_u,
+                         int dst_stride_u, uint8_t* dst_v, int dst_stride_v,
+                         int width, int height);
+    if (format == media::PIXEL_FORMAT_ARGB) {
+      ConvertToI420 = libyuv::ARGBToI420;
+    } else if (format == media::PIXEL_FORMAT_ABGR) {
+      ConvertToI420 = libyuv::ABGRToI420;
+    } else {
+      DLOG(ERROR) << "Unexpected format";
+      return nullptr;
+    }
+
+    scoped_refptr<media::VideoFrame> result = frame_pool_.CreateFrame(
+        media::PIXEL_FORMAT_I420, frame->coded_size(), frame->visible_rect(),
+        frame->natural_size(), frame->timestamp());
+
+    if (!result) {
+      DLOG(ERROR) << "Couldn't allocate video frame";
+      return nullptr;
+    }
+
+    if (ConvertToI420(frame->visible_data(media::VideoFrame::kARGBPlane),
+                      frame->stride(media::VideoFrame::kARGBPlane),
+                      result->visible_data(media::VideoFrame::kYPlane),
+                      result->stride(media::VideoFrame::kYPlane),
+                      result->visible_data(media::VideoFrame::kUPlane),
+                      result->stride(media::VideoFrame::kUPlane),
+                      result->visible_data(media::VideoFrame::kVPlane),
+                      result->stride(media::VideoFrame::kVPlane),
+                      frame->coded_size().width(),
+                      frame->coded_size().height()) != 0) {
+      DLOG(ERROR) << "Couldn't convert to I420";
+      return nullptr;
+    }
+
+    return result;
+  }
+
+#if defined(__APPLE__)
+  scoped_refptr<media::VideoFrame> ConvertToYUVFrame(
+      CVPixelBufferRef pixelBuffer,
+      base::TimeDelta timestamp) {
+    if (pixelBuffer == NULL) {
+      return nullptr;
+    }
+    auto format = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    gfx::Size imgSize(CVPixelBufferGetWidth(pixelBuffer),
+                      CVPixelBufferGetHeight(pixelBuffer));
+
+    int (*ConvertToI420)(const uint8_t* src_argb, int src_stride_argb,
+                         uint8_t* dst_y, int dst_stride_y, uint8_t* dst_u,
+                         int dst_stride_u, uint8_t* dst_v, int dst_stride_v,
+                         int width, int height);
+    if (format == kCVPixelFormatType_32ARGB) {
+      ConvertToI420 = libyuv::ARGBToI420;
+    } else {
+      DLOG(ERROR) << "Unexpected format";
+      return nullptr;
+    }
+
+    scoped_refptr<media::VideoFrame> result =
+        frame_pool_.CreateFrame(media::PIXEL_FORMAT_I420, imgSize,
+                                gfx::Rect(imgSize), imgSize, timestamp);
+
+    if (!result) {
+      DLOG(ERROR) << "Couldn't allocate video frame";
+      return nullptr;
+    }
+
+    if (CVPixelBufferLockBaseAddress(
+            pixelBuffer, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+      DLOG(ERROR) << "Failed to lock base address";
+      return nullptr;
+    }
+
+    if (ConvertToI420(static_cast<const uint8_t*>(
+                          CVPixelBufferGetBaseAddress(pixelBuffer)),
+                      CVPixelBufferGetBytesPerRow(pixelBuffer),
+                      result->visible_data(media::VideoFrame::kYPlane),
+                      result->stride(media::VideoFrame::kYPlane),
+                      result->visible_data(media::VideoFrame::kUPlane),
+                      result->stride(media::VideoFrame::kUPlane),
+                      result->visible_data(media::VideoFrame::kVPlane),
+                      result->stride(media::VideoFrame::kVPlane),
+                      imgSize.width(), imgSize.height()) != 0) {
+      CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+      DLOG(ERROR) << "Couldn't convert to I420";
+      return nullptr;
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    return result;
+  }
+#endif
+
   // Enqueues a GC wrapper of a media::VideoFrame
   // Frame will be delivered in a renderer thread queue
   void queueGCFrame(FrameWrapper* framewapper, base::TimeTicks timestamp) {
@@ -480,12 +583,33 @@ class ControllerWrapper final
   // Frame will be delivered in a renderer thread queue
   // timestamp is in milliseconds
   void queueFrame(double timestamp, VideoFrame* frame) override {
-    auto f = static_cast<NonGCFrameWrapper*>(frame)->frame();
+    auto* frameWrapper = static_cast<NonGCFrameWrapper*>(frame);
+    const auto pixelFormat = frameWrapper->format().pixel_format;
+    auto f = frameWrapper->frame();
+    if (pixelFormat == VideoFrame::PixelFormat::ARGB ||
+        pixelFormat == VideoFrame::PixelFormat::ABGR) {
+      f = ConvertToYUVFrame(f);
+    }
     auto delta = base::TimeDelta::FromMillisecondsD(timestamp);
     auto ticks = base::TimeTicks::UnixEpoch() + delta;
     io_task_runner_->PostTask(FROM_HERE, base::Bind(deliver_, f, ticks));
     delete frame;
   }
+
+#if defined(__APPLE__)
+  void queueFrame(CVPixelBufferRef pixelBuffer, double timestamp) override {
+    auto delta = base::TimeDelta::FromMillisecondsD(timestamp);
+    const OSType cvFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    scoped_refptr<media::VideoFrame> f;
+    if (cvFormat == kCVPixelFormatType_32ARGB) {
+      f = ConvertToYUVFrame(pixelBuffer, delta);
+    } else {
+      f = media::VideoFrame::WrapCVPixelBuffer(pixelBuffer, delta);
+    }
+    auto ticks = base::TimeTicks::UnixEpoch() + delta;
+    io_task_runner_->PostTask(FROM_HERE, base::Bind(deliver_, f, ticks));
+  }
+#endif
 
   // Releases a con-GC wrapper of a media::VideoFrame
   void releaseFrame(VideoFrame* frame) override {

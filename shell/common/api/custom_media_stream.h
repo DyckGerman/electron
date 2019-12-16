@@ -8,6 +8,10 @@
 #include <v8.h>
 #include <memory>
 
+#if defined(__APPLE__)
+#include <CoreVideo/CoreVideo.h>
+#endif
+
 namespace CustomMediaStream {
 
 // Frame interface for non-GC frames
@@ -81,6 +85,10 @@ class VideoFramesController {
   // timestamp is in milliseconds
   virtual void queueFrame(double timestamp, VideoFrame* frame) = 0;
 
+#if defined(__APPLE__)
+  virtual void queueFrame(CVPixelBufferRef pixelBuffer, double timestamp) = 0;
+#endif
+
   // Releases the frame
   virtual void releaseFrame(VideoFrame* frame) = 0;
 };
@@ -136,6 +144,12 @@ class ControllerHolder final
   void queue(double timestamp, FramePtr ptr) {
     controller_->queueFrame(timestamp, ptr.release());
   }
+
+#if defined(__APPLE__)
+  void queue(CVPixelBufferRef pixelBuffer, double timestamp) {
+    controller_->queueFrame(pixelBuffer, timestamp);
+  }
+#endif
 
  private:
   ControllerHolder(v8::Isolate* isolate,
