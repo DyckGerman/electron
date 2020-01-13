@@ -154,7 +154,7 @@ class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
         .SetProperty("y", &FrameWrapper::y)
         .SetProperty("u", &FrameWrapper::u)
         .SetProperty("v", &FrameWrapper::v)
-        .SetProperty("v", &FrameWrapper::a);
+        .SetProperty("a", &FrameWrapper::a);
   }
 
   FrameWrapper(v8::Isolate* isolate, scoped_refptr<media::VideoFrame> frame)
