@@ -519,7 +519,7 @@ class ControllerWrapper final
                          int dst_stride_u, uint8_t* dst_v, int dst_stride_v,
                          int width, int height);
     if (format == kCVPixelFormatType_32ARGB) {
-      ConvertToI420 = libyuv::ARGBToI420;
+      ConvertToI420 = libyuv::BGRAToI420;
     } else {
       DLOG(ERROR) << "Unexpected format";
       return nullptr;
