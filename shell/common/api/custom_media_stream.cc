@@ -140,7 +140,7 @@ class FrameWrapper final : public mate::Wrappable<FrameWrapper> {
  public:
   static void BuildPrototype(v8::Isolate* isolate,
                              v8::Local<v8::FunctionTemplate> prototype) {
-    auto classname = mate::StringToV8(isolate, "CustomMediaStreamVideoFrame");
+    auto classname = mate::StringToV8(isolate, "CMSFrameWrapper");
     prototype->SetClassName(classname);
 
     mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
@@ -640,7 +640,7 @@ class ControllerWrapper final
   // Registers methods for the prototype template
   static void BuildPrototype(v8::Isolate* isolate,
                              v8::Local<v8::FunctionTemplate> prototype) {
-    auto classname = mate::StringToV8(isolate, "CustomMediaStreamController");
+    auto classname = mate::StringToV8(isolate, "CMSVideoFramesController");
     prototype->SetClassName(classname);
     mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
         .SetMethod("allocateFrame", &ControllerWrapper::allocateGCFrame)
