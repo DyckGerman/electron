@@ -563,6 +563,11 @@ class ControllerWrapper final
   // Frame will be delivered in a renderer thread queue
   void queueGCFrame(FrameWrapper* framewapper, base::TimeTicks timestamp) {
     auto f = framewapper->extractFrame();
+    const auto pixelFormat = f->format();
+    if (pixelFormat == media::VideoPixelFormat::PIXEL_FORMAT_ARGB ||
+        pixelFormat == media::VideoPixelFormat::PIXEL_FORMAT_ABGR) {
+      f = ConvertToYUVFrame(f);
+    }
     io_task_runner_->PostTask(FROM_HERE, base::Bind(deliver_, f, timestamp));
   }
 
