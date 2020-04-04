@@ -6,6 +6,7 @@
 #define SHELL_COMMON_API_CUSTOM_MEDIA_STREAM_H_
 
 #include <v8.h>
+#include <functional>
 #include <memory>
 
 #if defined(__APPLE__)
